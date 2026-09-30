@@ -1,0 +1,156 @@
+getwd();library(Seurat);library(Matrix);suppressMessages(library(dplyr));library(ggplot2);suppressMessages(library('pagoda2'));suppressMessages(library("velocyto.R"));suppressMessages(library(monocle));
+suppressMessages(library(cowplot));suppressMessages(library("patchwork"));suppressMessages(library(harmony))
+options(repr.plot.width=7, repr.plot.height=6); library("RColorBrewer");library(magrittr);library(scales)
+setwd("/sdb/xxjiang/memb")
+getwd()
+packageVersion('Seurat')
+
+PBMC<- Read10X(data.dir = "/sdb/xxjiang/memb/ncbref/aggr_5/outs/count/filtered_feature_bc_matrix");
+pbmc <- CreateSeuratObject(counts = PBMC, names.field = 2,names.delim = "-", project = "Mouse",min.cells = 3)
+pbmc
+
+names(pbmc@meta.data)
+
+table(Idents(pbmc))
+
+table(pbmc$orig.ident)
+
+levels(pbmc)=c(1:58)
+
+table(Idents(pbmc))
+
+new.cluster.ids <- c('E8YS','E9YSn','E9YS2n','RD1YSn','RD1YS2','SD1YSn','E9E1','E9E2','E9E3', 'RD1E1','RD1E2','RD1E3','SD1E1','SD1E2','SD1E3n','SD1E4','SD1E5','SD1E6n','E10E1','E10E2','E10E3', 'RD2E1','RD2E2','RD2E3' ,'E11E1','E11E2','E11E3','RD3E1','RD3E2','RD3E3','E12E1','E12E2','E12E3'
+                
+              ,'RD4E1n',  'RD4E2','RD4E3n'    ,
+'D1E1n',
+'D1E2n',
+'D1E3',
+'D2E1',
+'D2E2',
+'D2E3',
+'D3E1',
+'D3E2',
+'D3E3',
+'D4E1',
+'D4E2',
+'D4E3',
+'D5E1',
+'D5E2',
+'D5E3',
+'D6E1',
+'D6E2',
+'D6E3',
+'E13E1',
+'E13E2',
+'E13E3',
+'E8n')
+
+names(new.cluster.ids) <- levels(pbmc)
+pbmc <- RenameIdents(pbmc, new.cluster.ids)
+
+table(Idents(pbmc))
+
+pbmc$orig.ident=Idents(pbmc)
+
+options(repr.plot.width=20, repr.plot.height=5)
+VlnPlot(pbmc,pt.size=0.01, features = c("nFeature_RNA","percent.mt"),raster=FALSE,ncol=1) +  theme(axis.title=element_blank(),axis.text=element_text(size=16),plot.title=element_text(size=16))+NoLegend()
+
+pbmc[["percent.mt"]] <- PercentageFeatureSet(pbmc, pattern = "^mt-")
+
+options(repr.plot.width=15, repr.plot.height=10)
+VlnPlot(pbmc,pt.size=0.01, features = c("nFeature_RNA","percent.mt"),raster=FALSE,ncol=1) +  theme(axis.title=element_blank(),axis.text=element_text(size=16),plot.title=element_text(size=16))+NoLegend()
+
+pbmc
+
+head(pbmc)
+
+saveRDS(pbmc,'mouse-aggr-758153.rds')
+
+setwd("/sdb/xxjiang/memb/matrix/aggr_5_500")
+
+table(Idents(pbmc))
+
+pbmcx
+
+pbmc <- subset(pbmcx, subset = nFeature_RNA > 500 & percent.mt <10);pbmc
+
+table(Idents(pbmc))
+
+options(repr.plot.width=15, repr.plot.height=10)
+VlnPlot(pbmc,pt.size=0.01, features = c("nFeature_RNA","percent.mt"),raster=FALSE,ncol=1) +  theme(axis.title=element_blank(),axis.text=element_text(size=16),plot.title=element_text(size=16))+NoLegend()
+
+options(repr.plot.width=15, repr.plot.height=10)
+VlnPlot(pbmc,pt.size=0, features = c("nFeature_RNA","percent.mt"),raster=FALSE,ncol=1) +  theme(axis.title=element_blank(),axis.text=element_text(size=16),plot.title=element_text(size=16))+NoLegend()
+
+
+
+write.csv(as.matrix(subset(pbmc,idents ='E8YS')$RNA@counts), "E8YS.csv"); write.csv(subset(pbmc,idents ='E8YS')@meta.data, "E8YSD.csv")
+write.csv(as.matrix(subset(pbmc,idents ='RD1YS2')$RNA@counts), "RD1YS2.csv"); write.csv(subset(pbmc,idents ='RD1YS2')@meta.data, "RD1YS2D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='E9E3')$RNA@counts), "E9E3.csv"); write.csv(subset(pbmc,idents ='E9E3')@meta.data, "E9E3D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='E9E2')$RNA@counts), "E9E2.csv"); write.csv(subset(pbmc,idents ='E9E2')@meta.data, "E9E2D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='E9E1')$RNA@counts), "E9E1.csv"); write.csv(subset(pbmc,idents ='E9E1')@meta.data, "E9E1D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='RD1E3')$RNA@counts), "RD1E3.csv"); write.csv(subset(pbmc,idents ='RD1E3')@meta.data, "RD1E3D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='RD1E2')$RNA@counts), "RD1E2.csv"); write.csv(subset(pbmc,idents ='RD1E2')@meta.data, "RD1E2D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='RD1E1')$RNA@counts), "RD1E1.csv"); write.csv(subset(pbmc,idents ='RD1E1')@meta.data, "RD1E1D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='SD1E2')$RNA@counts), "SD1E2.csv"); write.csv(subset(pbmc,idents ='SD1E2')@meta.data, "SD1E2D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='SD1E1')$RNA@counts), "SD1E1.csv"); write.csv(subset(pbmc,idents ='SD1E1')@meta.data, "SD1E1D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='SD1E4')$RNA@counts), "SD1E4.csv"); write.csv(subset(pbmc,idents ='SD1E4')@meta.data, "SD1E4D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='SD1E5')$RNA@counts), "SD1E5.csv"); write.csv(subset(pbmc,idents ='SD1E5')@meta.data, "SD1E5D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='E10E3')$RNA@counts), "E10E3.csv"); write.csv(subset(pbmc,idents ='E10E3')@meta.data, "E10E3D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='E10E2')$RNA@counts), "E10E2.csv"); write.csv(subset(pbmc,idents ='E10E2')@meta.data, "E10E2D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='E10E1')$RNA@counts), "E10E1.csv"); write.csv(subset(pbmc,idents ='E10E1')@meta.data, "E10E1D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='RD2E3')$RNA@counts), "RD2E3.csv"); write.csv(subset(pbmc,idents ='RD2E3')@meta.data, "RD2E3D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='RD2E2')$RNA@counts), "RD2E2.csv"); write.csv(subset(pbmc,idents ='RD2E2')@meta.data, "RD2E2D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='RD2E1')$RNA@counts), "RD2E1.csv"); write.csv(subset(pbmc,idents ='RD2E1')@meta.data, "RD2E1D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='E11E3')$RNA@counts), "E11E3.csv"); write.csv(subset(pbmc,idents ='E11E3')@meta.data, "E11E3D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='E11E2')$RNA@counts), "E11E2.csv"); write.csv(subset(pbmc,idents ='E11E2')@meta.data, "E11E2D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='E11E1')$RNA@counts), "E11E1.csv"); write.csv(subset(pbmc,idents ='E11E1')@meta.data, "E11E1D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='RD3E3')$RNA@counts), "RD3E3.csv"); write.csv(subset(pbmc,idents ='RD3E3')@meta.data, "RD3E3D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='RD3E2')$RNA@counts), "RD3E2.csv"); write.csv(subset(pbmc,idents ='RD3E2')@meta.data, "RD3E2D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='RD3E1')$RNA@counts), "RD3E1.csv"); write.csv(subset(pbmc,idents ='RD3E1')@meta.data, "RD3E1D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='E12E3')$RNA@counts), "E12E3.csv"); write.csv(subset(pbmc,idents ='E12E3')@meta.data, "E12E3D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='E12E2')$RNA@counts), "E12E2.csv"); write.csv(subset(pbmc,idents ='E12E2')@meta.data, "E12E2D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='E12E1')$RNA@counts), "E12E1.csv"); write.csv(subset(pbmc,idents ='E12E1')@meta.data, "E12E1D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='RD4E3n')$RNA@counts), "RD4E3n.csv"); write.csv(subset(pbmc,idents ='RD4E3n')@meta.data, "RD4E3nD.csv")
+write.csv(as.matrix(subset(pbmc,idents ='RD4E2')$RNA@counts), "RD4E2.csv"); write.csv(subset(pbmc,idents ='RD4E2')@meta.data, "RD4E2D.csv")
+
+
+write.csv(as.matrix(subset(pbmc,idents ='E9YSn')$RNA@counts), "E9YSn.csv"); write.csv(subset(pbmc,idents ='E9YSn')@meta.data, "E9YSnD.csv")
+write.csv(as.matrix(subset(pbmc,idents ='E9YS2n')$RNA@counts), "E9YS2n.csv"); write.csv(subset(pbmc,idents ='E9YS2n')@meta.data, "E9YS2nD.csv")
+write.csv(as.matrix(subset(pbmc,idents ='RD1YSn')$RNA@counts), "RD1YSn.csv"); write.csv(subset(pbmc,idents ='RD1YSn')@meta.data, "RD1YSnD.csv")
+write.csv(as.matrix(subset(pbmc,idents ='SD1E3n')$RNA@counts), "SD1E3n.csv"); write.csv(subset(pbmc,idents ='SD1E3n')@meta.data, "SD1E3nD.csv")
+write.csv(as.matrix(subset(pbmc,idents ='SD1YSn')$RNA@counts), "SD1YSn.csv"); write.csv(subset(pbmc,idents ='SD1YSn')@meta.data, "SD1YSnD.csv")
+write.csv(as.matrix(subset(pbmc,idents ='SD1E6n')$RNA@counts), "SD1E6n.csv"); write.csv(subset(pbmc,idents ='SD1E6n')@meta.data, "SD1E6nD.csv")
+write.csv(as.matrix(subset(pbmc,idents ='RD4E1n')$RNA@counts), "RD4E1n.csv"); write.csv(subset(pbmc,idents ='RD4E1n')@meta.data, "RD4E1nD.csv")
+
+write.csv(as.matrix(subset(pbmc,idents ='D1E1n')$RNA@counts), "D1E1n.csv"); write.csv(subset(pbmc,idents ='D1E1n')@meta.data, "D1E1nD.csv")
+write.csv(as.matrix(subset(pbmc,idents ='D1E2n')$RNA@counts), "D1E2n.csv"); write.csv(subset(pbmc,idents ='D1E2n')@meta.data, "D1E2nD.csv")
+write.csv(as.matrix(subset(pbmc,idents ='D1E3')$RNA@counts), "D1E3.csv"); write.csv(subset(pbmc,idents ='D1E3')@meta.data, "D1E3D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='D2E1')$RNA@counts), "D2E1.csv"); write.csv(subset(pbmc,idents ='D2E1')@meta.data, "D2E1D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='D2E2')$RNA@counts), "D2E2.csv"); write.csv(subset(pbmc,idents ='D2E2')@meta.data, "D2E2D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='D2E3')$RNA@counts), "D2E3.csv"); write.csv(subset(pbmc,idents ='D2E3')@meta.data, "D2E3D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='D3E1')$RNA@counts), "D3E1.csv"); write.csv(subset(pbmc,idents ='D3E1')@meta.data, "D3E1D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='D3E2')$RNA@counts), "D3E2.csv"); write.csv(subset(pbmc,idents ='D3E2')@meta.data, "D3E2D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='D3E3')$RNA@counts), "D3E3.csv"); write.csv(subset(pbmc,idents ='D3E3')@meta.data, "D3E3D.csv")
+
+write.csv(as.matrix(subset(pbmc,idents ='D4E1')$RNA@counts), "D4E1.csv"); write.csv(subset(pbmc,idents ='D4E1')@meta.data, "D4E1D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='D4E2')$RNA@counts), "D4E2.csv"); write.csv(subset(pbmc,idents ='D4E2')@meta.data, "D4E2D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='D4E3')$RNA@counts), "D4E3.csv"); write.csv(subset(pbmc,idents ='D4E3')@meta.data, "D4E3D.csv")
+
+write.csv(as.matrix(subset(pbmc,idents ='D5E1')$RNA@counts), "D5E1.csv"); write.csv(subset(pbmc,idents ='D5E1')@meta.data, "D5E1D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='D5E2')$RNA@counts), "D5E2.csv"); write.csv(subset(pbmc,idents ='D5E2')@meta.data, "D5E2D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='D5E3')$RNA@counts), "D5E3.csv"); write.csv(subset(pbmc,idents ='D5E3')@meta.data, "D5E3D.csv")
+
+write.csv(as.matrix(subset(pbmc,idents ='D6E1')$RNA@counts), "D6E1.csv"); write.csv(subset(pbmc,idents ='D6E1')@meta.data, "D6E1D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='D6E2')$RNA@counts), "D6E2.csv"); write.csv(subset(pbmc,idents ='D6E2')@meta.data, "D6E2D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='D6E3')$RNA@counts), "D6E3.csv"); write.csv(subset(pbmc,idents ='D6E3')@meta.data, "D6E3D.csv")
+
+
+write.csv(as.matrix(subset(pbmc,idents ='E13E1')$RNA@counts), "E13E1.csv"); write.csv(subset(pbmc,idents ='E13E1')@meta.data, "E13E1D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='E13E2')$RNA@counts), "E13E2.csv"); write.csv(subset(pbmc,idents ='E13E2')@meta.data, "E13E2D.csv")
+write.csv(as.matrix(subset(pbmc,idents ='E13E3')$RNA@counts), "E13E3.csv"); write.csv(subset(pbmc,idents ='E13E3')@meta.data, "E13E3D.csv")
+
+write.csv(as.matrix(subset(pbmc,idents ='E8n')$RNA@counts), "E8n.csv"); write.csv(subset(pbmc,idents ='E8n')@meta.data, "E8nD.csv")
+
+
+

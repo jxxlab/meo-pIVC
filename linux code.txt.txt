@@ -1,0 +1,87 @@
+cd /sdb/xxjiang/memb/ncbref
+
+cellranger count --id=E9E1 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=E9E1 --create-bam=true --nosecondary
+
+cellranger count --id=E9E2 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=E9E2 --create-bam=true --nosecondary
+
+cellranger count --id=E9E3 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=E9E3 --create-bam=true --nosecondary
+
+cellranger count --id=E10E1 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=E10E1 --create-bam=true --nosecondary
+
+cellranger count --id=E10E2 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=E10E2 --create-bam=true --nosecondary
+
+cellranger count --id=E10E3 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=E10E3 --create-bam=true --nosecondary
+
+cellranger count --id=E11E1 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=E11E1 --create-bam=true --nosecondary
+
+cellranger count --id=E11E2 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=E11E2 --create-bam=true --nosecondary
+
+cellranger count --id=E11E3 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=E11E3 --create-bam=true --nosecondary
+
+cellranger count --id=E12E1 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=E12E1 --create-bam=true --nosecondary
+
+cellranger count --id=E12E2 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=E12E2 --create-bam=true --nosecondary
+
+cellranger count --id=E12E3 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=E12E3 --create-bam=true --nosecondary
+
+
+cellranger count --id=RD1E1 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=RD1E1 --create-bam=true --nosecondary
+
+cellranger count --id=RD1E2 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=RD1E2 --create-bam=true --nosecondary
+
+cellranger count --id=RD1E3 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=RD1E3 --create-bam=true --nosecondary
+
+cellranger count --id=RD2E1 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=RD2E1 --create-bam=true --nosecondary
+
+cellranger count --id=RD2E2 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=RD2E2 --create-bam=true --nosecondary
+
+cellranger count --id=RD2E3 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=RD2E3 --create-bam=true --nosecondary
+
+cellranger count --id=RD3E1 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=RD3E1 --create-bam=true --nosecondary
+
+cellranger count --id=RD3E2 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=RD3E2 --create-bam=true --nosecondary
+
+cellranger count --id=RD3E3 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=RD3E3 --create-bam=true --nosecondary
+
+cellranger count --id=RD4E1n --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=RD4E1n --create-bam=true --nosecondary
+
+cellranger count --id=RD4E2 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=RD4E2 --create-bam=true --nosecondary
+
+cellranger count --id=RD4E3n --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=RD4E3n --create-bam=true --nosecondary
+
+
+cellranger count --id=D1E1n --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=D1E1n --create-bam=true --nosecondary
+
+cellranger count --id=D1E2n --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=D1E2n --create-bam=true --nosecondary
+
+cellranger count --id=D1E3 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=D1E3 --create-bam=true --nosecondary
+
+cellranger count --id=D2E1 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=D2E1 --create-bam=true --nosecondary
+
+cellranger count --id=D2E2 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=D2E2 --create-bam=true --nosecondary
+
+cellranger count --id=D2E3 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=D2E3 --create-bam=true --nosecondary
+
+cellranger count --id=D3E1 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=D3E1 --create-bam=true --nosecondary
+
+cellranger count --id=D3E2 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=D3E2 --create-bam=true --nosecondary
+
+cellranger count --id=D3E3 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=D3E3 --create-bam=true --nosecondary
+
+cellranger count --id=D4E1 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=D4E1 --create-bam=true --nosecondary
+
+cellranger count --id=D4E2 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=D4E2 --create-bam=true --nosecondary
+
+cellranger count --id=D4E3 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=D4E3 --create-bam=true --nosecondary
+
+cellranger count --id=D5E1 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=D5E1 --create-bam=true --nosecondary
+
+cellranger count --id=D5E2 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=D5E2 --create-bam=true --nosecondary
+
+cellranger count --id=D5E3 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=D5E3 --create-bam=true --nosecondary
+
+cellranger count --id=D6E1 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=D6E1 --create-bam=true --nosecondary
+
+cellranger count --id=D6E2 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=D6E2 --create-bam=true --nosecondary
+
+cellranger count --id=D6E3 --transcriptome=/home/xxjiang/soft/GRCm38.89 --fastqs=/sdb/xxjiang/memb/fq --sample=D6E3 --create-bam=true --nosecondary
