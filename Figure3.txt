@@ -1,0 +1,2108 @@
+# ======================================================================
+# Figure 3 – consolidated analysis/plotting code
+# meo-pIVC manuscript
+#
+# IMPORTANT
+# ----------------------------------------------------------------------
+# This TXT contains both R and Python sections.
+# Run R sections in R/RStudio/Jupyter-R and the RNA-velocity section
+# (Figure 3d-f) in Python.
+#
+# Panel-to-source mapping
+#   Figure 3a-b : global CX1 UMAP + cell fractions
+#   Figure 3c   : strict pseudo-bulk Pearson correlation, whole dataset
+#   Figure 3d-f : scVelo RNA velocity, same workflow for 3 lineage subsets
+#   Figure 3g   : placode subtypes
+#   Figure 3h   : gut/endoderm subtypes
+#   Figure 3i   : global metabolome stage-to-stage Pearson correlation
+#                 (meo-pIVC2 D1-D6 versus in vivo E9-E12)
+#   Figure 3j   : central carbon/energy metabolism recovery heatmap
+#   Figure 3k   : glycolysis + TCA metabolite mean-of-replicates heatmap
+#
+# Core datasets appearing in the supplied scripts:
+#   moe-E9-D6-RD4-373319.rds
+#   moe-sc-placodes-8255.rds
+#   moe-sc-Gut-endoderm-C12-13-7028-new.rds
+#   moe-sc-E9-D6-RD4-C1-C12-185873.h5ad (example velocity subset)
+# ======================================================================
+
+
+# ======================================================================
+# PART I. R CODE
+# Figures 3a, 3b, 3c, 3g, 3h, 3i, 3j
+# ======================================================================
+
+
+# ======================================================================
+# 0. Common R packages
+# ======================================================================
+
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(Matrix)
+  library(edgeR)
+  library(dplyr)
+  library(tidyr)
+  library(plyr)
+  library(ggplot2)
+  library(patchwork)
+  library(scales)
+  library(grid)
+})
+
+
+# ======================================================================
+# 1. Common sample definitions
+# ======================================================================
+
+stage_order <- c(
+  "E9", "E10", "E11", "E12",
+  "RD1", "RD2", "RD3", "RD4",
+  "D1", "D2", "D3", "D4", "D5", "D6"
+)
+
+expected_replicates <- c(
+  "E9E1",  "E9E2",  "E9E3",
+  "E10E1", "E10E2", "E10E3",
+  "E11E1", "E11E2", "E11E3",
+  "E12E1", "E12E2", "E12E3",
+
+  "RD1E1", "RD1E2", "RD1E3",
+  "RD2E1", "RD2E2", "RD2E3",
+  "RD3E1", "RD3E2", "RD3E3",
+  "RD4E1n", "RD4E2", "RD4E3n",
+
+  "D1E1n", "D1E2n", "D1E3",
+  "D2E1",  "D2E2",  "D2E3",
+  "D3E1",  "D3E2",  "D3E3",
+  "D4E1",  "D4E2",  "D4E3",
+  "D5E1",  "D5E2",  "D5E3",
+  "D6E1",  "D6E2",  "D6E3"
+)
+
+replicate_to_stage <- c(
+  E9E1="E9", E9E2="E9", E9E3="E9",
+  E10E1="E10", E10E2="E10", E10E3="E10",
+  E11E1="E11", E11E2="E11", E11E3="E11",
+  E12E1="E12", E12E2="E12", E12E3="E12",
+
+  RD1E1="RD1", RD1E2="RD1", RD1E3="RD1",
+  RD2E1="RD2", RD2E2="RD2", RD2E3="RD2",
+  RD3E1="RD3", RD3E2="RD3", RD3E3="RD3",
+  RD4E1n="RD4", RD4E2="RD4", RD4E3n="RD4",
+
+  D1E1n="D1", D1E2n="D1", D1E3="D1",
+  D2E1="D2", D2E2="D2", D2E3="D2",
+  D3E1="D3", D3E2="D3", D3E3="D3",
+  D4E1="D4", D4E2="D4", D4E3="D4",
+  D5E1="D5", D5E2="D5", D5E3="D5",
+  D6E1="D6", D6E2="D6", D6E3="D6"
+)
+
+# Exact post-QC cell numbers for the FULL 373,319-cell object.
+# These are used for the strict Figure 3c QC.
+expected_ncells_full <- c(
+  E9E1=10411, E9E2=11086, E9E3=10544,
+  E10E1=8166, E10E2=8895, E10E3=8560,
+  E11E1=8752, E11E2=7059, E11E3=9235,
+  E12E1=10691, E12E2=8455, E12E3=7334,
+
+  RD1E1=7048, RD1E2=8470, RD1E3=7533,
+  RD2E1=8180, RD2E2=7667, RD2E3=8457,
+  RD3E1=9697, RD3E2=9665, RD3E3=7540,
+  RD4E1n=12008, RD4E2=9199, RD4E3n=5789,
+
+  D1E1n=11850, D1E2n=8758, D1E3=9508,
+  D2E1=7417, D2E2=8274, D2E3=7232,
+  D3E1=8390, D3E2=9661, D3E3=8219,
+  D4E1=7729, D4E2=7733, D4E3=10466,
+  D5E1=11433, D5E2=9310, D5E3=10327,
+  D6E1=8125, D6E2=9698, D6E3=8748
+)
+
+stopifnot(length(expected_replicates) == 42)
+stopifnot(sum(expected_ncells_full[expected_replicates]) == 373319)
+
+
+# ======================================================================
+# Figure 3a-b
+# Global CX1 UMAP and stage/day cell fractions
+# ======================================================================
+
+pbmc <- readRDS("moe-E9-D6-RD4-373319.rds")
+
+# ----------------------------
+# Figure 3 grouping
+# ----------------------------
+pbmc$sample2 <- ifelse(
+  pbmc$sample1 %in% c("E9","E10","E11","E12"), "Vivo",
+  ifelse(
+    pbmc$sample1 %in% c("RD1","RD2","RD3","RD4"), "Vitro1",
+    ifelse(
+      pbmc$sample1 %in% c("D1","D2","D3","D4","D5","D6"), "Vitro2",
+      NA
+    )
+  )
+)
+
+pbmc$sample2 <- factor(
+  pbmc$sample2,
+  levels = c("Vivo","Vitro1","Vitro2")
+)
+
+# Original Figure 3 CX1 palette
+cx1_cols <- c(
+  "#FCFF00","#BD84B0","#456722","#FFAAFF","#BF9D88","#4A6798",
+  "#FACB12","#0F4A9C","#FFD731","#685ED8","#E3CB3A","#683ED8",
+  "#2FDA00","#A64D7E","#AAFFAA","#9D0049","#5ADBE4","#772600",
+  "#89C1F5","#BD3400","#3F84AA","#DDAA22","#5581CA","#DEA93C",
+  "#2F4A60","#F79083","#127D4C","#FF7F9C","#2F9A00","#B51D8D",
+  "#549E79","#E85639","#00BFC4","#FF5C00","#005579","#FBBE92",
+  "#532C5A","#E3CB9A","#532C8A","#DABE99","#7C2A47","#F9DFE6",
+  "#635547","#C594BF","#D5E839","#683EA8","#C19F70"
+)
+
+# ----------------------------
+# Figure 3a
+# ----------------------------
+Idents(pbmc) <- "CX1"
+
+pbmc$sample2_plot <- factor(
+  dplyr::recode(
+    as.character(pbmc$sample2),
+    Vivo   = "in vivo (E9-E12)",
+    Vitro1 = "meo-pIVC1 (Day1-Day4)",
+    Vitro2 = "meo-pIVC2 (Day1-Day6)"
+  ),
+  levels = c(
+    "in vivo (E9-E12)",
+    "meo-pIVC1 (Day1-Day4)",
+    "meo-pIVC2 (Day1-Day6)"
+  )
+)
+
+p3a <- DimPlot(
+  pbmc,
+  reduction = "umap",
+  group.by = "CX1",
+  split.by = "sample2_plot",
+  label = TRUE,
+  label.size = 6,
+  ncol = 3,
+  raster = FALSE,
+  repel = TRUE,
+  shuffle = TRUE,
+  cols = cx1_cols
+) +
+  theme(
+    axis.line = element_blank(),
+    axis.title = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    legend.text = element_text(size = 20),
+    legend.key.height = unit(0.35, "inch"),
+    text = element_text(size = 20),
+    strip.text = element_text(size = 20)
+  )
+
+ggsave(
+  "Figure3a_CX1_UMAP_sample2.pdf",
+  p3a,
+  width = 30,
+  height = 8,
+  dpi = 300,
+  limitsize = FALSE
+)
+
+# ----------------------------
+# Figure 3b
+# Cell fraction = cells in CX1 / all cells in that stage/day * 100
+# ----------------------------
+meta3b <- as.data.frame(
+  as.array(table(pbmc$sample1, pbmc$CX1))
+)
+
+colnames(meta3b) <- c("Sample","Group","Cells")
+
+meta3b <- plyr::ddply(
+  meta3b,
+  "Sample",
+  transform,
+  Fraction = Cells / sum(Cells) * 100
+)
+
+# Check: every stage/day should sum to 100
+print(aggregate(Fraction ~ Sample, data = meta3b, FUN = sum))
+
+grp_order <- as.character(44:1)
+meta3b$Group <- factor(meta3b$Group, levels = grp_order)
+
+meta3b$Sample <- factor(
+  meta3b$Sample,
+  levels = c(
+    "E12","E11","E10","E9",
+    "RD4","RD3","RD2","RD1",
+    "D6","D5","D4","D3","D2","D1"
+  )
+)
+
+cols3b <- setNames(cx1_cols[1:44], as.character(1:44))
+
+p3b <- ggplot(
+  meta3b,
+  aes(x = Fraction, y = Sample, fill = Group)
+) +
+  geom_bar(
+    stat = "identity",
+    position = position_stack(reverse = FALSE),
+    width = 0.7,
+    linewidth = 0.25
+  ) +
+  scale_fill_manual(
+    values = cols3b,
+    breaks = grp_order,
+    guide = guide_legend(
+      reverse = TRUE,
+      keywidth = 2,
+      keyheight = 2
+    )
+  ) +
+  theme_bw() +
+  theme(
+    axis.title.x = element_text(size = 20, face = "bold"),
+    axis.text.x = element_text(size = 20),
+    axis.text.y = element_text(size = 20),
+    legend.text = element_text(size = 12),
+    legend.title = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  xlab("Percentage of cells (%)") +
+  ylab("")
+
+ggsave(
+  "Figure3b_CX1_cell_percentage.pdf",
+  p3b,
+  width = 20,
+  height = 10,
+  dpi = 300,
+  limitsize = FALSE
+)
+
+write.csv(
+  meta3b[, c("Sample","Group","Cells","Fraction")],
+  "Figure3b_cell_fraction_by_sample_CX1.csv",
+  row.names = FALSE
+)
+
+
+# ======================================================================
+# Figure 3c
+# STRICT pseudo-bulk Pearson-correlation workflow
+#
+# Method:
+#   1. biological replicate = orig.ident
+#   2. sum RAW UMI counts within each biological replicate
+#   3. edgeR filterByExpr
+#   4. TMM normalization
+#   5. log2-CPM
+#   6. average the 3 replicates within each stage/day
+#   7. Pearson correlation across retained genes
+#
+# Figure 3c:
+#   full dataset; D1-D6 and RD1-RD4 versus E9-E12
+# ======================================================================
+
+run_strict_pseudobulk_correlation <- function(
+  obj,
+  prefix,
+  replicate_col = "orig.ident",
+  expected_ncells = NULL,
+  plot_pivc1 = TRUE
+) {
+
+  DefaultAssay(obj) <- "RNA"
+  meta <- obj@meta.data
+
+  # ----------------------------------------------------------
+  # A. strict metadata checks
+  # ----------------------------------------------------------
+  stopifnot(replicate_col %in% colnames(meta))
+  stopifnot("sample1" %in% colnames(meta))
+  stopifnot(identical(rownames(meta), colnames(obj)))
+
+  replicate_id <- as.character(meta[[replicate_col]])
+  names(replicate_id) <- rownames(meta)
+
+  observed_reps <- unique(replicate_id)
+
+  missing_reps <- setdiff(expected_replicates, observed_reps)
+  extra_reps   <- setdiff(observed_reps, expected_replicates)
+
+  if (length(missing_reps) > 0) {
+    stop("Missing replicates: ", paste(missing_reps, collapse = ", "))
+  }
+
+  if (length(extra_reps) > 0) {
+    stop("Unexpected replicates: ", paste(extra_reps, collapse = ", "))
+  }
+
+  # sample1 must agree with explicit replicate -> stage mapping
+  expected_stage_per_cell <- unname(replicate_to_stage[replicate_id])
+  observed_stage_per_cell <- as.character(meta$sample1)
+
+  if (any(observed_stage_per_cell != expected_stage_per_cell)) {
+    stop("sample1 does not agree with explicit replicate_to_stage mapping.")
+  }
+
+  # Optional exact cell-count QC.
+  # Use this for Figure 3c full 373,319-cell object.
+  actual_ncells <- table(
+    factor(replicate_id, levels = expected_replicates)
+  )
+
+  if (!is.null(expected_ncells)) {
+    expected_ncells <- expected_ncells[expected_replicates]
+
+    qc <- data.frame(
+      replicate = expected_replicates,
+      expected_cells = as.integer(expected_ncells),
+      actual_cells = as.integer(actual_ncells),
+      difference = as.integer(actual_ncells) - as.integer(expected_ncells)
+    )
+
+    write.csv(
+      qc,
+      paste0(prefix, "_sample_cell_count_QC.csv"),
+      row.names = FALSE
+    )
+
+    if (any(qc$difference != 0)) {
+      stop("Exact cell-count QC failed for ", prefix)
+    }
+  }
+
+  # ----------------------------------------------------------
+  # B. raw count extraction
+  # ----------------------------------------------------------
+  counts <- GetAssayData(
+    obj,
+    assay = "RNA",
+    slot = "counts"
+  )
+
+  stopifnot(identical(colnames(counts), rownames(meta)))
+
+  # ----------------------------------------------------------
+  # C. replicate-level pseudo-bulk
+  # ----------------------------------------------------------
+  cell_replicate <- factor(
+    replicate_id,
+    levels = expected_replicates
+  )
+
+  design_pb <- Matrix::sparse.model.matrix(
+    ~ 0 + cell_replicate
+  )
+
+  colnames(design_pb) <- expected_replicates
+
+  pseudo_counts <- counts %*% design_pb
+  rownames(pseudo_counts) <- rownames(counts)
+  colnames(pseudo_counts) <- expected_replicates
+
+  # ----------------------------------------------------------
+  # D. edgeR filtering + TMM + log2-CPM
+  # ----------------------------------------------------------
+  rep_stage <- factor(
+    unname(replicate_to_stage[colnames(pseudo_counts)]),
+    levels = stage_order
+  )
+
+  y <- edgeR::DGEList(
+    counts = pseudo_counts,
+    group = rep_stage
+  )
+
+  keep <- edgeR::filterByExpr(
+    y,
+    group = rep_stage
+  )
+
+  y <- y[
+    keep,
+    ,
+    keep.lib.sizes = FALSE
+  ]
+
+  y <- edgeR::calcNormFactors(
+    y,
+    method = "TMM"
+  )
+
+  logcpm_rep <- edgeR::cpm(
+    y,
+    log = TRUE,
+    prior.count = 1
+  )
+
+  # ----------------------------------------------------------
+  # E. average exactly 3 biological replicates per stage/day
+  # ----------------------------------------------------------
+  stage_mean_logcpm <- matrix(
+    NA_real_,
+    nrow = nrow(logcpm_rep),
+    ncol = length(stage_order),
+    dimnames = list(
+      rownames(logcpm_rep),
+      stage_order
+    )
+  )
+
+  for (st in stage_order) {
+
+    reps_st <- names(replicate_to_stage)[
+      replicate_to_stage == st
+    ]
+
+    if (length(reps_st) != 3) {
+      stop(st, " does not have exactly 3 explicitly defined replicates.")
+    }
+
+    stage_mean_logcpm[, st] <- rowMeans(
+      logcpm_rep[, reps_st, drop = FALSE]
+    )
+  }
+
+  # ----------------------------------------------------------
+  # F. Pearson correlation across retained genes
+  # ----------------------------------------------------------
+  cor_mat <- cor(
+    stage_mean_logcpm,
+    method = "pearson",
+    use = "everything"
+  )
+
+  vivo <- c("E9","E10","E11","E12")
+  p2   <- c("D1","D2","D3","D4","D5","D6")
+  p1   <- c("RD1","RD2","RD3","RD4")
+
+  cor_D  <- cor_mat[p2, vivo, drop = FALSE]
+  cor_RD <- cor_mat[p1, vivo, drop = FALSE]
+
+  write.csv(
+    cor_mat,
+    paste0(prefix, "_full_Pearson.csv")
+  )
+
+  write.csv(
+    cor_D,
+    paste0(prefix, "_meo_pIVC2_vs_in_vivo.csv")
+  )
+
+  write.csv(
+    cor_RD,
+    paste0(prefix, "_meo_pIVC1_vs_in_vivo.csv")
+  )
+
+  write.table(
+    rownames(stage_mean_logcpm),
+    paste0(prefix, "_genes_used_for_Pearson.txt"),
+    quote = FALSE,
+    row.names = FALSE,
+    col.names = FALSE
+  )
+
+  # ----------------------------------------------------------
+  # G. plotting helper
+  # ----------------------------------------------------------
+  make_cor_df <- function(mat, day_prefix = "Day") {
+    z <- as.data.frame(mat, check.names = FALSE) %>%
+      mutate(CultureDay = rownames(.)) %>%
+      pivot_longer(
+        cols = all_of(vivo),
+        names_to = "Stage",
+        values_to = "Correlation"
+      )
+
+    # Extract final number from D1/RD1 etc.
+    z$Day <- paste(
+      day_prefix,
+      gsub("[^0-9]", "", z$CultureDay)
+    )
+
+    z$Stage <- factor(z$Stage, levels = vivo)
+    z
+  }
+
+  D_df <- make_cor_df(cor_D)
+  D_df$Day <- factor(
+    D_df$Day,
+    levels = rev(paste("Day", 1:6))
+  )
+
+  RD_df <- make_cor_df(cor_RD)
+  RD_df$Day <- factor(
+    RD_df$Day,
+    levels = rev(paste("Day", 1:4))
+  )
+
+  cor_scale <- scale_fill_gradientn(
+    colours = c(
+      "#2C7BB6",
+      "#ABD9E9",
+      "#FFFFBF",
+      "#FDAE61",
+      "#D7191C"
+    ),
+    limits = c(0.4, 1.0),
+    breaks = c(0.4, 0.6, 0.8, 1.0),
+    oob = scales::squish,
+    name = "Correlation"
+  )
+
+  p_D <- ggplot(
+    D_df,
+    aes(x = Stage, y = Day, fill = Correlation)
+  ) +
+    geom_tile(color = "grey70", linewidth = 0.45) +
+    geom_text(
+      aes(label = sprintf("%.2f", Correlation)),
+      size = 4.2
+    ) +
+    cor_scale +
+    coord_fixed() +
+    labs(x = NULL, y = "meo-pIVC2") +
+    theme_classic(base_size = 12) +
+    theme(
+      axis.ticks = element_blank(),
+      axis.line = element_blank()
+    )
+
+  if (plot_pivc1) {
+
+    p_RD <- ggplot(
+      RD_df,
+      aes(x = Stage, y = Day, fill = Correlation)
+    ) +
+      geom_tile(color = "grey70", linewidth = 0.45) +
+      geom_text(
+        aes(label = sprintf("%.2f", Correlation)),
+        size = 4.2
+      ) +
+      cor_scale +
+      coord_fixed() +
+      labs(x = NULL, y = "meo-pIVC1") +
+      theme_classic(base_size = 12) +
+      theme(
+        axis.ticks = element_blank(),
+        axis.line = element_blank(),
+        legend.position = "none"
+      )
+
+    p_final <- p_D / p_RD +
+      patchwork::plot_layout(
+        heights = c(6, 4)
+      )
+
+    ggsave(
+      paste0(prefix, "_Pearson_heatmap.pdf"),
+      p_final,
+      width = 4.6,
+      height = 6.0
+    )
+
+  } else {
+
+    ggsave(
+      paste0(prefix, "_Pearson_heatmap.pdf"),
+      p_D,
+      width = 4.6,
+      height = 4.0
+    )
+
+    p_final <- p_D
+  }
+
+  return(
+    list(
+      pseudo_counts = pseudo_counts,
+      logcpm_rep = logcpm_rep,
+      stage_mean_logcpm = stage_mean_logcpm,
+      correlation = cor_mat,
+      cor_pIVC2 = cor_D,
+      cor_pIVC1 = cor_RD,
+      plot = p_final
+    )
+  )
+}
+
+
+# ======================================================================
+# Figure 3c
+# Whole-embryo / whole-dataset strict pseudo-bulk correlation
+# ======================================================================
+
+pbmc_all <- readRDS(
+  "moe-E9-D6-RD4-373319.rds"
+)
+
+fig3c <- run_strict_pseudobulk_correlation(
+  obj = pbmc_all,
+  prefix = "Figure3c_whole_dataset",
+  replicate_col = "orig.ident",
+  expected_ncells = expected_ncells_full,
+  plot_pivc1 = TRUE
+)
+
+print(round(fig3c$cor_pIVC2, 2))
+print(round(fig3c$cor_pIVC1, 2))
+
+
+# ======================================================================
+# Figure 3g
+# Placode subtypes: split UMAP
+# ======================================================================
+
+placode <- readRDS(
+  "moe-sc-placodes-8255.rds"
+)
+
+# Keep/rebuild the manuscript P1-P6 order if needed.
+# Original mapping from the supplied script:
+placode_map <- c(
+  "P6 Olfactory placodes"       = "P1 Olfactory placodes",
+  "P2 Adenohypophyseal placodes"= "P2 Adenohypophyseal placodes",
+  "P1 Lens placodes"            = "P3 Lens placodes",
+  "P5 Trigeminal placodes"      = "P4 Trigeminal placodes",
+  "P4 Otic placodes"            = "P5 Otic placodes",
+  "P3 Epibranchial placodes"    = "P6 Epibranchial placodes"
+)
+
+# Rebuild from P_Type only when necessary.
+if (!"P" %in% colnames(placode@meta.data)) {
+
+  Idents(placode) <- "P_Type"
+
+  current_id <- as.character(Idents(placode))
+  current_id <- unname(placode_map[current_id])
+
+  placode$P_Type_new <- factor(
+    current_id,
+    levels = c(
+      "P1 Olfactory placodes",
+      "P2 Adenohypophyseal placodes",
+      "P3 Lens placodes",
+      "P4 Trigeminal placodes",
+      "P5 Otic placodes",
+      "P6 Epibranchial placodes"
+    )
+  )
+
+  placode$P <- sub(
+    " .*",
+    "",
+    as.character(placode$P_Type_new)
+  )
+}
+
+placode$P <- factor(
+  as.character(placode$P),
+  levels = paste0("P", 1:6)
+)
+
+placode$sample2 <- factor(
+  as.character(placode$sample2),
+  levels = c("Vivo","Vitro1","Vitro2")
+)
+
+placode_cols <- c(
+  P1 = "#E41A1C",
+  P2 = "#377EB8",
+  P3 = "#4DAF4A",
+  P4 = "#984EA3",
+  P5 = "#FF7F00",
+  P6 = "#00A6D6"
+)
+
+Idents(placode) <- "P"
+
+p3g <- DimPlot(
+  placode,
+  reduction = "umap",
+  split.by = "sample2",
+  label = TRUE,
+  label.size = 8,
+  ncol = 3,
+  raster = FALSE,
+  repel = TRUE
+) +
+  scale_colour_manual(
+    values = placode_cols
+  ) +
+  theme(
+    axis.line = element_blank(),
+    axis.title = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    legend.text = element_text(size = 14),
+    strip.text = element_text(size = 16)
+  )
+
+ggsave(
+  "Figure3g_placodes_split_sample2.pdf",
+  p3g,
+  width = 24,
+  height = 6,
+  dpi = 300,
+  limitsize = FALSE
+)
+
+
+# ======================================================================
+# Figure 3h
+# Gut/endoderm subtypes: split UMAP
+# ======================================================================
+
+endo <- readRDS(
+  "moe-sc-Gut-endoderm-C12-13-7028-new.rds"
+)
+
+# Preserve original X labels before merging X1 + X4.
+if (!"X_before_merge" %in% colnames(endo@meta.data)) {
+  endo$X_before_merge <- as.character(endo$X)
+}
+
+x_map <- c(
+  X1="X1",
+  X2="X2",
+  X3="X3",
+  X4="X1",
+  X5="X4",
+  X6="X5",
+  X7="X6",
+  X8="X7"
+)
+
+x_old <- as.character(endo$X_before_merge)
+
+stopifnot(
+  !anyNA(x_old),
+  all(x_old %in% names(x_map))
+)
+
+endo$X <- factor(
+  unname(x_map[x_old]),
+  levels = paste0("X", 1:7)
+)
+
+x_type_map <- c(
+  X1="X1 Gut",
+  X2="X2 Stomach/foregut",
+  X3="X3 Lung",
+  X4="X4 Pancreatic",
+  X5="X5 Hepatoblasts",
+  X6="X6 Thyroid epithelium",
+  X7="X7 Renal epithelium"
+)
+
+endo$X_Type <- factor(
+  unname(x_type_map[as.character(endo$X)]),
+  levels = unname(x_type_map)
+)
+
+endo$sample2 <- factor(
+  as.character(endo$sample2),
+  levels = c("Vivo","Vitro1","Vitro2")
+)
+
+endo_cols <- c(
+  X1="#BD84B0",
+  X2="#456722",
+  X3="#FACB12",
+  X4="#005579",
+  X5="#FBBE92",
+  X6="#532C5A",
+  X7="#D5E839"
+)
+
+Idents(endo) <- "X"
+
+p3h <- DimPlot(
+  endo,
+  reduction = "umap",
+  split.by = "sample2",
+  label = TRUE,
+  label.size = 8,
+  ncol = 3,
+  raster = FALSE,
+  repel = TRUE
+) +
+  scale_colour_manual(
+    values = endo_cols
+  ) +
+  theme(
+    axis.line = element_blank(),
+    axis.title = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    legend.text = element_text(size = 14),
+    strip.text = element_text(size = 16)
+  )
+
+ggsave(
+  "Figure3h_gut_endoderm_split_sample2.pdf",
+  p3h,
+  width = 24,
+  height = 6,
+  dpi = 300,
+  limitsize = FALSE
+)
+
+
+# ======================================================================
+# Figure 3i
+# PIVC2 global metabolome: stage-to-stage Pearson correlation
+#
+# Source:
+#   ExtendedData_Figure7b_Figure3i_Figure3k.txt
+#
+# Input:
+#   data/all_sample_data_tm105.xlsx
+#
+# Analysis:
+#   1. Detect E9-E12 and D1-D6 embryo metabolomics samples.
+#   2. Transform metabolite abundance as log2(intensity + 1).
+#   3. Average biological replicates within each stage/day.
+#   4. Calculate Pearson correlation across metabolites for each
+#      meo-pIVC2 day (D1-D6) versus each in vivo stage (E9-E12).
+#   5. Plot the 6 x 4 correlation heatmap.
+# ======================================================================
+
+suppressPackageStartupMessages({
+  library(readxl)
+  library(dplyr)
+  library(stringr)
+  library(ggplot2)
+  library(scales)
+})
+
+input_file_met <- "data/all_sample_data_tm105.xlsx"
+output_dir_met <- "results"
+dir.create(
+  output_dir_met,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+stage_levels_met <- c(
+  "E9","E10","E11","E12",
+  "D1","D2","D3","D4","D5","D6"
+)
+
+# ------------------------------------------------------------
+# 3i-1. Load and prepare embryo metabolomics data
+# ------------------------------------------------------------
+
+dat_met <- read_excel(
+  input_file_met
+) %>%
+  as.data.frame(
+    check.names = FALSE
+  )
+
+if (!"Compounds" %in% colnames(dat_met)) {
+  stop("Column 'Compounds' was not found.")
+}
+
+sample_cols_met <- grep(
+  "^[ED][0-9]+E[0-9]+$",
+  colnames(dat_met),
+  value = TRUE
+)
+
+if (length(sample_cols_met) == 0) {
+  stop("No embryo sample columns were detected.")
+}
+
+si_met <- data.frame(
+  Sample = sample_cols_met,
+  stringsAsFactors = FALSE
+) %>%
+  mutate(
+    Culture = ifelse(
+      str_starts(Sample, "E"),
+      "In vivo",
+      "In vitro"
+    ),
+    StageNum = as.numeric(
+      str_extract(Sample, "[0-9]+")
+    ),
+    StageLabel = paste0(
+      ifelse(
+        Culture == "In vivo",
+        "E",
+        "D"
+      ),
+      StageNum
+    ),
+    Rep = as.numeric(
+      str_extract(Sample, "[0-9]+$")
+    )
+  ) %>%
+  filter(
+    (Culture == "In vivo" & StageNum %in% 9:12) |
+    (Culture == "In vitro" & StageNum %in% 1:6)
+  ) %>%
+  mutate(
+    StageLabel = factor(
+      StageLabel,
+      levels = stage_levels_met
+    )
+  ) %>%
+  arrange(
+    StageLabel,
+    Rep
+  )
+
+mat_met <- dat_met %>%
+  select(
+    all_of(si_met$Sample)
+  ) %>%
+  as.matrix()
+
+storage.mode(mat_met) <- "numeric"
+
+rownames(mat_met) <- make.unique(
+  as.character(dat_met$Compounds)
+)
+
+# Same transformation as the supplied Figure 3i/3k source code
+mat_log_met <- log2(
+  mat_met + 1
+)
+
+mat_log_met <- mat_log_met[
+  ,
+  si_met$Sample,
+  drop = FALSE
+]
+
+
+# ------------------------------------------------------------
+# 3i-2. Mean metabolite profile for each stage/day
+# ------------------------------------------------------------
+
+group_mean_met <- function(
+  culture_name,
+  stages,
+  prefix
+) {
+
+  out <- sapply(
+    stages,
+    function(st) {
+
+      smp <- si_met$Sample[
+        si_met$Culture == culture_name &
+        si_met$StageNum == as.numeric(st)
+      ]
+
+      if (length(smp) == 0) {
+
+        rep(
+          NA_real_,
+          nrow(mat_log_met)
+        )
+
+      } else {
+
+        rowMeans(
+          mat_log_met[
+            ,
+            smp,
+            drop = FALSE
+          ],
+          na.rm = TRUE
+        )
+      }
+    }
+  )
+
+  out <- as.matrix(out)
+
+  rownames(out) <- rownames(mat_log_met)
+
+  colnames(out) <- paste0(
+    prefix,
+    stages
+  )
+
+  out
+}
+
+vivo_mean_met <- group_mean_met(
+  "In vivo",
+  c("9","10","11","12"),
+  "E"
+)
+
+vitro_mean_met <- group_mean_met(
+  "In vitro",
+  c("1","2","3","4","5","6"),
+  "D"
+)
+
+
+# ------------------------------------------------------------
+# 3i-3. Pearson correlation
+# ------------------------------------------------------------
+
+cor_mat_met <- matrix(
+  NA_real_,
+  nrow = ncol(vitro_mean_met),
+  ncol = ncol(vivo_mean_met),
+  dimnames = list(
+    colnames(vitro_mean_met),
+    colnames(vivo_mean_met)
+  )
+)
+
+for (i in seq_len(ncol(vitro_mean_met))) {
+
+  for (j in seq_len(ncol(vivo_mean_met))) {
+
+    x_met <- vitro_mean_met[, i]
+    y_met <- vivo_mean_met[, j]
+
+    ok_met <- is.finite(x_met) &
+      is.finite(y_met)
+
+    cor_mat_met[i, j] <- if (
+      sum(ok_met) >= 3
+    ) {
+      cor(
+        x_met[ok_met],
+        y_met[ok_met],
+        method = "pearson"
+      )
+    } else {
+      NA_real_
+    }
+  }
+}
+
+print(
+  round(
+    cor_mat_met,
+    2
+  )
+)
+
+write.csv(
+  cor_mat_met,
+  file.path(
+    output_dir_met,
+    "Figure3i_PIVC2_stage_Pearson_correlation.csv"
+  )
+)
+
+
+# ------------------------------------------------------------
+# 3i-4. Correlation heatmap
+# ------------------------------------------------------------
+
+cor_df_met <- as.data.frame(
+  as.table(cor_mat_met),
+  stringsAsFactors = FALSE
+)
+
+colnames(cor_df_met) <- c(
+  "InVitro",
+  "InVivo",
+  "Correlation"
+)
+
+cor_df_met <- cor_df_met %>%
+  mutate(
+    InVivo = factor(
+      InVivo,
+      levels = colnames(cor_mat_met)
+    ),
+    InVitro = factor(
+      InVitro,
+      levels = rev(
+        rownames(cor_mat_met)
+      )
+    )
+  )
+
+p3i <- ggplot(
+  cor_df_met,
+  aes(
+    x = InVivo,
+    y = InVitro,
+    fill = Correlation
+  )
+) +
+  geom_tile(
+    color = "white",
+    linewidth = 0.8
+  ) +
+  geom_text(
+    aes(
+      label = sprintf(
+        "%.2f",
+        Correlation
+      )
+    ),
+    size = 5.5,
+    color = "black"
+  ) +
+  scale_fill_gradientn(
+    colors = c(
+      "#2C7BB6",
+      "#ABD9E9",
+      "#FFFFBF",
+      "#FDAE61",
+      "#F46D43"
+    ),
+    limits = c(0.7, 1),
+    oob = scales::squish,
+    name = "Correlation"
+  ) +
+  coord_fixed() +
+  labs(
+    x = NULL,
+    y = NULL
+  ) +
+  theme_classic(
+    base_size = 14
+  ) +
+  theme(
+    axis.text.x = element_text(
+      size = 13,
+      color = "black"
+    ),
+    axis.text.y = element_text(
+      size = 13,
+      color = "black"
+    ),
+    axis.ticks = element_line(
+      color = "black",
+      linewidth = 0.7
+    ),
+    axis.line = element_line(
+      color = "black",
+      linewidth = 0.8
+    ),
+    legend.title = element_text(
+      size = 13,
+      face = "bold"
+    ),
+    legend.text = element_text(
+      size = 11
+    ),
+    legend.key.height = grid::unit(
+      1.6,
+      "cm"
+    ),
+    legend.key.width = grid::unit(
+      0.45,
+      "cm"
+    )
+  )
+
+ggsave(
+  file.path(
+    output_dir_met,
+    "Figure3i_PIVC2_stage_correlation.pdf"
+  ),
+  p3i,
+  width = 4.2,
+  height = 4.8,
+  units = "in"
+)
+
+print(p3i)
+
+
+# ======================================================================
+# Figure 3j
+# Central carbon and energy metabolism recovery
+# ======================================================================
+
+suppressPackageStartupMessages({
+  library(readxl)
+  library(stringr)
+})
+
+input_file_j <- "data/Central_carbon_energy_recovery_9pathways_source_data.xlsx"
+output_dir_j <- "results"
+dir.create(output_dir_j, recursive = TRUE, showWarnings = FALSE)
+
+pathway_order_j <- c(
+  "Butanoate metabolism",
+  "Citrate cycle (TCA cycle)",
+  "Oxidative phosphorylation",
+  "Pyruvate metabolism",
+  "Pentose phosphate pathway",
+  "Glyoxylate and dicarboxylate metabolism",
+  "Glycolysis / Gluconeogenesis",
+  "Fructose and mannose metabolism",
+  "Propanoate metabolism"
+)
+
+dat_j <- readxl::read_excel(
+  input_file_j,
+  sheet = "Pathway_score_9"
+) %>%
+  as.data.frame()
+
+required_cols_j <- c(
+  "Pathway",
+  "Mean_signed_score_PIVC1",
+  "Mean_signed_score_PIVC2"
+)
+
+missing_cols_j <- setdiff(
+  required_cols_j,
+  colnames(dat_j)
+)
+
+if (length(missing_cols_j) > 0) {
+  stop(
+    "Missing required columns: ",
+    paste(missing_cols_j, collapse = ", ")
+  )
+}
+
+missing_pathways_j <- setdiff(
+  pathway_order_j,
+  dat_j$Pathway
+)
+
+if (length(missing_pathways_j) > 0) {
+  stop(
+    "Missing required pathways: ",
+    paste(missing_pathways_j, collapse = ", ")
+  )
+}
+
+plot_df_j <- dat_j %>%
+  filter(Pathway %in% pathway_order_j) %>%
+  select(
+    Pathway,
+    Mean_signed_score_PIVC1,
+    Mean_signed_score_PIVC2
+  ) %>%
+  pivot_longer(
+    cols = starts_with("Mean_signed_score_"),
+    names_to = "System",
+    values_to = "Score"
+  ) %>%
+  mutate(
+    System = stringr::str_remove(
+      System,
+      "^Mean_signed_score_"
+    ),
+    System = factor(
+      System,
+      levels = c("PIVC1","PIVC2")
+    ),
+    Pathway = factor(
+      Pathway,
+      levels = rev(pathway_order_j)
+    )
+  )
+
+heat_cols_j <- c(
+  "#2C7FB8",
+  "#7FCDBB",
+  "#FFFFBF",
+  "#FDAE61",
+  "#D73027"
+)
+
+score_limit_j <- ceiling(
+  max(abs(plot_df_j$Score), na.rm = TRUE) * 10
+) / 10
+
+if (!is.finite(score_limit_j) || score_limit_j <= 0) {
+  score_limit_j <- 1
+}
+
+anchor_j <- min(1, score_limit_j)
+
+score_values_j <- scales::rescale(
+  c(
+    -score_limit_j,
+    -anchor_j,
+    0,
+    anchor_j,
+    score_limit_j
+  ),
+  from = c(-score_limit_j, score_limit_j)
+)
+
+p3j <- ggplot(
+  plot_df_j,
+  aes(x = System, y = Pathway, fill = Score)
+) +
+  geom_tile(
+    color = "white",
+    linewidth = 0.7
+  ) +
+  geom_text(
+    aes(label = sprintf("%.2f", Score)),
+    size = 4
+  ) +
+  scale_fill_gradientn(
+    colours = heat_cols_j,
+    values = score_values_j,
+    limits = c(-score_limit_j, score_limit_j),
+    oob = scales::squish,
+    name = "Mean in vitro\nscore"
+  ) +
+  labs(
+    title = "Central carbon and energy metabolism recovery",
+    x = NULL,
+    y = NULL
+  ) +
+  theme_classic(base_size = 13) +
+  theme(
+    axis.line = element_blank(),
+    axis.ticks = element_blank(),
+    axis.text.x = element_text(
+      face = "bold",
+      size = 11,
+      color = "black"
+    ),
+    axis.text.y = element_text(
+      size = 10.5,
+      color = "black"
+    ),
+    plot.title = element_text(
+      face = "bold",
+      size = 14,
+      hjust = 0.5
+    ),
+    legend.title = element_text(size = 9.5),
+    legend.text = element_text(size = 9)
+  )
+
+ggsave(
+  filename = file.path(
+    output_dir_j,
+    "Figure3j_Central_carbon_and_energy_metabolism_recovery.pdf"
+  ),
+  plot = p3j,
+  width = 7.2,
+  height = 5.9,
+  units = "in",
+  device = "pdf"
+)
+
+print(p3j)
+
+
+# ======================================================================
+# Figure 3k
+# Glycolysis and TCA metabolite heatmap
+#
+# Source:
+#   ExtendedData_Figure7b_Figure3i_Figure3k.txt
+#
+# Input:
+#   data/all_sample_data_tm105.xlsx
+#
+# The supplied source defines the glycolysis and TCA metabolite lists
+# separately and uses the same mean-of-replicates heatmap function for
+# both. For manuscript Figure 3k, the two supplied lists are concatenated
+# in their original order to generate the combined "Glycolysis and TCA"
+# heatmap shown in Figure 3.
+#
+# Calculation:
+#   1. use log2(intensity + 1) metabolite matrix prepared for Figure 3i
+#   2. calculate the mean of biological replicates for every stage/day
+#   3. row-wise Z-score across E9-E12 and D1-D6
+#   4. replace non-finite values by 0
+#   5. truncate Z-score to [-2, 2]
+#   6. no row/column clustering
+# ======================================================================
+
+suppressPackageStartupMessages({
+  library(ComplexHeatmap)
+  library(circlize)
+})
+
+# ------------------------------------------------------------
+# 3k-1. Metabolites defined in the supplied source
+# ------------------------------------------------------------
+
+glycolysis_patterns_3k <- c(
+  "Glucose",
+  "D-Glucose 6-Phosphate",
+  "Fructose-6-phosphate",
+  "1,6-di-O-phosphono-D-fructose",
+  "Dl-Glyceraldehyde 3-Phosphate",
+  "3-Phosphoglyceric acid",
+  "2-Phospho-D-glyceric acid",
+  "Phosphoenolpyruvate",
+  "Pyruvic Acid",
+  "Lactic acid"
+)
+
+tca_patterns_3k <- c(
+  "Citric Acid",
+  "Isocitric acid",
+  "Succinic acid",
+  "Fumaric Acid",
+  "Malic acid",
+  "Oxaloacetic acid"
+)
+
+# Figure 3k uses the combined order shown in the manuscript
+glycolysis_tca_patterns_3k <- c(
+  glycolysis_patterns_3k,
+  tca_patterns_3k
+)
+
+
+# ------------------------------------------------------------
+# 3k-2. Figure colors/annotations from the supplied source
+# ------------------------------------------------------------
+
+col_culture_3k <- c(
+  "In vivo" = "#1b9e77",
+  "In vitro" = "#d95f02"
+)
+
+col_stage_3k <- c(
+  "E9"  = "#4DBBD5",
+  "E10" = "#7FCDBB",
+  "E11" = "#FDAE61",
+  "E12" = "#E64B35",
+  "D1"  = "#C7E9C0",
+  "D2"  = "#A1D99B",
+  "D3"  = "#74C476",
+  "D4"  = "#41AB5D",
+  "D5"  = "#238B45",
+  "D6"  = "#005A32"
+)
+
+five_cols_3k <- c(
+  "#2C7FB8",
+  "#7FCDBB",
+  "#FFFFBF",
+  "#FDAE61",
+  "#D73027"
+)
+
+col_fun_3k <- circlize::colorRamp2(
+  c(-2,-1,0,1,2),
+  five_cols_3k
+)
+
+
+# ------------------------------------------------------------
+# 3k-3. Match metabolites in the source table
+# ------------------------------------------------------------
+
+find_first_match_3k <- function(
+  pattern,
+  metabolites
+) {
+
+  hit <- grep(
+    pattern,
+    metabolites,
+    ignore.case = TRUE,
+    fixed = TRUE,
+    value = TRUE
+  )
+
+  if (length(hit) == 0) {
+    NA_character_
+  } else {
+    hit[1]
+  }
+}
+
+
+build_met_table_3k <- function(
+  patterns
+) {
+
+  matched <- vapply(
+    patterns,
+    find_first_match_3k,
+    character(1),
+    metabolites = rownames(mat_log_met)
+  )
+
+  out <- data.frame(
+    Display = patterns,
+    Metabolite = unname(matched),
+    stringsAsFactors = FALSE
+  )
+
+  if (any(is.na(out$Metabolite))) {
+
+    message(
+      "Skipped metabolites not found: ",
+      paste(
+        out$Display[
+          is.na(out$Metabolite)
+        ],
+        collapse = "; "
+      )
+    )
+  }
+
+  out %>%
+    filter(
+      !is.na(Metabolite)
+    )
+}
+
+
+# ------------------------------------------------------------
+# 3k-4. Mean-of-replicates + row Z-score
+# ------------------------------------------------------------
+
+make_figure3k_heatmap <- function(
+  patterns,
+  title_text,
+  output_file,
+  pdf_width = 9.5,
+  pdf_height = 8.6
+) {
+
+  met_df <- build_met_table_3k(
+    patterns
+  )
+
+  if (nrow(met_df) == 0) {
+    stop(
+      "No metabolites were found for ",
+      title_text,
+      "."
+    )
+  }
+
+  idx_list <- lapply(
+    stage_levels_met,
+    function(st) {
+      which(
+        as.character(si_met$StageLabel) == st
+      )
+    }
+  )
+
+  names(idx_list) <- stage_levels_met
+
+  idx_list <- idx_list[
+    vapply(
+      idx_list,
+      length,
+      integer(1)
+    ) > 0
+  ]
+
+  mat_sub <- mat_log_met[
+    met_df$Metabolite,
+    si_met$Sample,
+    drop = FALSE
+  ]
+
+  mat_mean <- sapply(
+    idx_list,
+    function(idx) {
+
+      rowMeans(
+        mat_sub[
+          ,
+          idx,
+          drop = FALSE
+        ],
+        na.rm = TRUE
+      )
+    }
+  )
+
+  mat_mean <- as.matrix(
+    mat_mean
+  )
+
+  rownames(mat_mean) <- met_df$Display
+
+  # Row-wise Z-score across developmental stage/day means
+  mat_z <- t(
+    scale(
+      t(mat_mean)
+    )
+  )
+
+  mat_z[
+    !is.finite(mat_z)
+  ] <- 0
+
+  mat_z[
+    mat_z > 2
+  ] <- 2
+
+  mat_z[
+    mat_z < -2
+  ] <- -2
+
+  stage_used <- colnames(
+    mat_mean
+  )
+
+  culture_used <- ifelse(
+    str_starts(
+      stage_used,
+      "E"
+    ),
+    "In vivo",
+    "In vitro"
+  )
+
+  ha <- HeatmapAnnotation(
+    Culture = factor(
+      culture_used,
+      levels = c(
+        "In vivo",
+        "In vitro"
+      )
+    ),
+    Stage = factor(
+      stage_used,
+      levels = stage_levels_met
+    ),
+    col = list(
+      Culture = col_culture_3k,
+      Stage = col_stage_3k
+    ),
+    show_annotation_name = TRUE,
+    annotation_name_gp = grid::gpar(
+      fontsize = 13,
+      fontface = "bold"
+    ),
+    simple_anno_size = grid::unit(
+      0.40,
+      "cm"
+    ),
+    annotation_legend_param = list(
+      Culture = list(
+        title = "Culture",
+        at = c(
+          "In vivo",
+          "In vitro"
+        )
+      ),
+      Stage = list(
+        title = "Stage",
+        at = stage_levels_met
+      )
+    )
+  )
+
+  # Display D1-D6 as Day1-Day6 while retaining the original matrix order.
+  column_labels_3k <- ifelse(
+    grepl("^D", stage_used),
+    sub("^D", "Day", stage_used),
+    stage_used
+  )
+
+  cell_w <- 0.62
+  cell_h <- 0.48
+
+  ht <- Heatmap(
+    mat_z,
+    name = "Z-score",
+    col = col_fun_3k,
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    show_row_names = TRUE,
+    show_column_names = TRUE,
+    row_names_side = "left",
+    row_names_gp = grid::gpar(
+      fontsize = 11
+    ),
+    column_labels = column_labels_3k,
+    column_names_gp = grid::gpar(
+      fontsize = 10
+    ),
+    column_title = title_text,
+    column_title_gp = grid::gpar(
+      fontsize = 16,
+      fontface = "bold"
+    ),
+    width = grid::unit(
+      ncol(mat_z) * cell_w,
+      "cm"
+    ),
+    height = grid::unit(
+      max(
+        nrow(mat_z),
+        3
+      ) * cell_h,
+      "cm"
+    ),
+    top_annotation = ha,
+    heatmap_legend_param = list(
+      at = c(-2,-1,0,1,2),
+      direction = "horizontal",
+      title_position = "topcenter",
+      labels_gp = grid::gpar(
+        fontsize = 11
+      ),
+      title_gp = grid::gpar(
+        fontsize = 12,
+        fontface = "bold"
+      )
+    )
+  )
+
+  grDevices::pdf(
+    output_file,
+    width = pdf_width,
+    height = pdf_height,
+    useDingbats = FALSE
+  )
+
+  draw(
+    ht,
+    heatmap_legend_side = "left",
+    annotation_legend_side = "right"
+  )
+
+  grDevices::dev.off()
+
+  draw(
+    ht,
+    heatmap_legend_side = "left",
+    annotation_legend_side = "right"
+  )
+
+  invisible(
+    list(
+      mean_matrix = mat_mean,
+      zscore_matrix = mat_z,
+      heatmap = ht
+    )
+  )
+}
+
+
+# ------------------------------------------------------------
+# 3k-5. Generate manuscript Figure 3k
+# ------------------------------------------------------------
+
+fig3k <- make_figure3k_heatmap(
+  patterns = glycolysis_tca_patterns_3k,
+  title_text = "Glycolysis and TCA",
+  output_file = file.path(
+    output_dir_met,
+    "Figure3k_Glycolysis_and_TCA_mean_heatmap.pdf"
+  ),
+  pdf_width = 9.5,
+  pdf_height = 8.6
+)
+
+write.csv(
+  fig3k$mean_matrix,
+  file.path(
+    output_dir_met,
+    "Figure3k_Glycolysis_and_TCA_stage_mean_log2.csv"
+  )
+)
+
+write.csv(
+  fig3k$zscore_matrix,
+  file.path(
+    output_dir_met,
+    "Figure3k_Glycolysis_and_TCA_row_Zscore.csv"
+  )
+)
+
+
+# ======================================================================
+# PART II. PYTHON CODE
+# Figure 3d-f: RNA velocity
+# ======================================================================
+#
+# Copy the following section into a .py file or a Python notebook.
+# Figure 3d/e/f use the SAME workflow; only the lineage/subset h5ad
+# input and output prefix change.
+#
+# The supplied SCENIC.py contains the C1-C12 h5ad as one concrete example.
+# ======================================================================
+
+# ------------------------- PYTHON START -------------------------
+import os
+import numpy as np
+import pandas as pd
+import scvelo as scv
+import matplotlib.pyplot as plt
+import matplotlib as mpl
+from matplotlib.collections import PathCollection
+
+scv.settings.verbosity = 3
+scv.settings.presenter_view = True
+scv.set_figure_params("scvelo")
+
+scv.set_figure_params(
+    dpi=100,
+    fontsize=16,
+    dpi_save=100,
+    figsize=(3, 3),
+    frameon=False
+)
+
+mpl.rcParams["pdf.fonttype"] = 42
+mpl.rcParams["ps.fonttype"] = 42
+mpl.rcParams["svg.fonttype"] = "none"
+
+
+# --------------------------------------------------------------
+# Original CX1 palette
+# --------------------------------------------------------------
+x_colors = [
+    "#FCFF00", "#BD84B0", "#456722", "#FFAAFF", "#BF9D88", "#4A6798",
+    "#FACB12", "#0F4A9C", "#FFD731", "#685ED8", "#E3CB3A", "#683ED8",
+    "#2FDA00", "#A64D7E", "#AAFFAA", "#9D0049", "#5ADBE4", "#772600",
+    "#89C1F5", "#BD3400", "#3F84AA", "#DDAA22", "#5581CA", "#DEA93C",
+    "#2F4A60", "#F79083", "#127D4C", "#FF7F9C", "#2F9A00", "#B51D8D",
+    "#549E79", "#E85639", "#00BFC4", "#FF5C00", "#005579", "#FBBE92",
+    "#532C5A", "#E3CB9A", "#532C8A", "#DABE99", "#7C2A47", "#F9DFE6",
+    "#635547", "#C594BF", "#D5E839", "#683EA8", "#C19F70"
+]
+
+
+def prepare_cx1_palette(adata):
+
+    adata.obs["CX1"] = adata.obs["CX1"].astype(str)
+
+    cx1_categories = sorted(
+        adata.obs["CX1"].unique(),
+        key=lambda z: int(z)
+    )
+
+    adata.obs["CX1"] = pd.Categorical(
+        adata.obs["CX1"],
+        categories=cx1_categories,
+        ordered=True
+    )
+
+    full_palette = {
+        str(i + 1): color.upper()
+        for i, color in enumerate(x_colors)
+    }
+
+    return {
+        cluster: full_palette[cluster]
+        for cluster in cx1_categories
+    }
+
+
+def run_velocity_for_group(adata_all, group_name):
+
+    # Split into Vivo / Vitro1 / Vitro2 FIRST,
+    # then recalculate graph/moments/velocity for that group.
+    adata = adata_all[
+        adata_all.obs["sample2"].isin([group_name])
+    ].copy()
+
+    print(group_name, adata.shape)
+
+    scv.pp.filter_and_normalize(
+        adata,
+        min_shared_counts=20,
+        n_top_genes=2000
+    )
+
+    scv.pp.neighbors(
+        adata,
+        n_pcs=30,
+        n_neighbors=30
+    )
+
+    scv.pp.moments(
+        adata,
+        n_pcs=30,
+        n_neighbors=30
+    )
+
+    scv.tl.velocity(adata)
+
+    scv.tl.velocity_graph(
+        adata,
+        n_jobs=10
+    )
+
+    return adata
+
+
+def plot_velocity_group(
+    adata,
+    x_palette,
+    group_name,
+    output_prefix
+):
+
+    fig, ax = plt.subplots(figsize=(4, 4))
+
+    scv.pl.velocity_embedding_stream(
+        adata,
+        basis="umap",
+        color="CX1",
+        palette=x_palette,
+        size=10,
+        alpha=0.5,
+        density=0.6,
+        arrow_size=1,
+        linewidth=1.0,
+        smooth=0.8,
+        max_length=6,
+        legend_loc="on data",
+        legend_fontsize=6,
+        legend_fontweight="bold",
+        title="",
+        ax=ax,
+        show=False
+    )
+
+    # Keep labels editable
+    for txt in ax.texts:
+        txt.set_path_effects([])
+        txt.set_rasterized(False)
+        txt.set_fontsize(6)
+        txt.set_fontweight("bold")
+        txt.set_color("black")
+
+    # Prevent non-finite linewidth errors
+    for i, artist in enumerate(ax.collections):
+
+        if hasattr(artist, "get_linewidths"):
+
+            lw = np.asarray(
+                artist.get_linewidths(),
+                dtype=float
+            )
+
+            if lw.size > 0:
+
+                n_bad = np.sum(~np.isfinite(lw))
+
+                if n_bad > 0:
+
+                    lw = np.nan_to_num(
+                        lw,
+                        nan=0.0,
+                        posinf=0.0,
+                        neginf=0.0
+                    )
+
+                    artist.set_linewidths(lw)
+
+    # Rasterize cells only; keep text/streamlines editable
+    for artist in ax.collections:
+        if isinstance(artist, PathCollection):
+            artist.set_rasterized(True)
+
+    output_file = (
+        f"{output_prefix}_{group_name}_editable.pdf"
+    )
+
+    fig.savefig(
+        output_file,
+        format="pdf",
+        dpi=600,
+        bbox_inches="tight",
+        facecolor="white"
+    )
+
+    plt.show()
+    plt.close(fig)
+
+
+def make_velocity_panel(
+    input_h5ad,
+    output_prefix
+):
+
+    adata = scv.read(input_h5ad)
+
+    print(adata)
+
+    # Initial whole-subset processing
+    scv.pp.filter_and_normalize(
+        adata,
+        min_shared_counts=20,
+        n_top_genes=2000
+    )
+
+    scv.pp.moments(
+        adata,
+        n_pcs=30,
+        n_neighbors=30
+    )
+
+    scv.tl.velocity(adata)
+
+    scv.tl.velocity_graph(
+        adata,
+        n_jobs=10
+    )
+
+    x_palette = prepare_cx1_palette(adata)
+    adata_all = adata.copy()
+
+    for group_name in [
+        "Vivo",
+        "Vitro1",
+        "Vitro2"
+    ]:
+
+        adata_group = run_velocity_for_group(
+            adata_all,
+            group_name
+        )
+
+        plot_velocity_group(
+            adata_group,
+            x_palette,
+            group_name,
+            output_prefix
+        )
+
+
+# --------------------------------------------------------------
+# Concrete example supplied in SCENIC.py
+# Use the corresponding lineage/subset h5ad for each of 3d/3e/3f.
+# --------------------------------------------------------------
+
+make_velocity_panel(
+    input_h5ad=(
+        "/sdc/jxx2/moe/"
+        "moe-sc-E9-D6-RD4-C1-C12-185873.h5ad"
+    ),
+    output_prefix=(
+        "velocity_moe-sc-E9-D6-RD4-C1-C12-185873"
+    )
+)
+
+# For Figure 3d/e/f:
+# make_velocity_panel("FIG3D_SUBSET.h5ad", "Figure3d_velocity")
+# make_velocity_panel("FIG3E_SUBSET.h5ad", "Figure3e_velocity")
+# make_velocity_panel("FIG3F_SUBSET.h5ad", "Figure3f_velocity")
+
+# -------------------------- PYTHON END --------------------------
+
+
+# ======================================================================
+# End of Figure 3 consolidated code
+# ======================================================================
