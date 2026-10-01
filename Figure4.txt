@@ -1,0 +1,609 @@
+﻿# Figure 4: Integrated analysis code
+# Panel c: KEGG GSEA for RA versus Control. The DEG-based enrichKEGG
+# analysis in Copy1 is not a substitute for this analysis.
+# Panel d: Bubble plot of canonical signalling pathways. Colour represents
+# the mean gene z-score; bubble size represents the percentage of genes
+# with a group-mean z-score greater than zero.
+# Panels e-h: Heatmaps of group-mean expression for RA, HOX/Neural,
+# TGFB, and NODAL gene sets.
+
+suppressPackageStartupMessages({
+  library(DESeq2)
+  library(dplyr)
+  library(ggplot2)
+  library(stringr)
+  library(clusterProfiler)
+  library(org.Mm.eg.db)
+  library(pheatmap)
+  library(scales)
+})
+set.seed(777)
+out_dir <- "Figure4_output"
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+input_rds <- "DESeq2_results_Embryo_YolkSac.rds"
+classic_rds <- "classic_signal_gene_sets_simple_raw_MSigDB.rds"
+stopifnot(file.exists(input_rds), file.exists(classic_rds))
+obj <- readRDS(input_rds)
+stopifnot(all(c("count_mat", "coldata", "gene_anno", "res_Embryo", "res_Yolk_sac") %in% names(obj)))
+count_mat <- as.matrix(obj$count_mat)
+coldata <- as.data.frame(obj$coldata)
+gene_anno <- as.data.frame(obj$gene_anno)
+res_Embryo <- obj$res_Embryo
+res_Yolk_sac <- obj$res_Yolk_sac
+classic_list_simple <- readRDS(classic_rds)
+pathway_order <- c("RA", "NODAL", "BMP", "WNT", "SHH", "FGF", "TGFB")
+stopifnot(all(pathway_order %in% names(classic_list_simple)))
+
+# 新增：明确核对原样本 ID 与组织映射，避免按位置误分组。
+sample_meta <- data.frame(
+  Sample = c("D1-1", "D1-2", "D1-3", "D1-4", "D1-5", "D1-6",
+             "RA-1", "RA-3", "RA-4", "RA-6",
+             "2DG-1", "2DG-2", "2DG-3", "2DG-4", "2DG-5", "2DG-6"),
+  group = rep(c("Control", "RA", "2DG"), c(6, 4, 6)),
+  tissue = c(rep("Yolk_sac",3), rep("Embryo",3), rep("Yolk_sac",2),
+             rep("Embryo",2), rep("Yolk_sac",3), rep("Embryo",3)),
+  stringsAsFactors = FALSE
+)
+stopifnot(setequal(colnames(count_mat), sample_meta$Sample),
+          !anyDuplicated(colnames(count_mat)), !anyDuplicated(rownames(count_mat)),
+          all(sample_meta$Sample %in% rownames(coldata)),
+          all(c("Geneid", "GeneName") %in% names(gene_anno)))
+count_mat <- count_mat[, sample_meta$Sample, drop=FALSE]
+coldata <- coldata[sample_meta$Sample, , drop=FALSE]
+stopifnot(identical(as.character(coldata$group), sample_meta$group),
+          identical(as.character(coldata$tissue), sample_meta$tissue),
+          all(is.finite(count_mat)), all(count_mat >= 0),
+          all(abs(count_mat-round(count_mat)) < 1e-8))
+coldata$group <- factor(coldata$group, levels=c("Control", "RA", "2DG"))
+coldata$tissue <- factor(coldata$tissue, levels=c("Embryo", "Yolk_sac"))
+coldata$Condition <- ifelse(coldata$group=="Control", "Ctrl", ifelse(coldata$group=="RA", "RA", "DG"))
+coldata$Tissue <- ifelse(coldata$tissue=="Embryo", "Emb", "YS")
+coldata$Group <- paste(coldata$Condition,coldata$Tissue,sep="_")
+group_all <- c("Ctrl_YS", "Ctrl_Emb", "RA_YS", "RA_Emb", "DG_YS", "DG_Emb")
+group_show <- group_all[1:4]
+write.csv(cbind(Sample=rownames(coldata),coldata), file.path(out_dir,"sample_metadata.csv"), row.names=FALSE)
+
+# Figure 4a–b：需提供原照片后另行排版；不从表达矩阵生成。
+
+# Figure 4c：GSEA 函数原样提取自 Copy2，下面仅调整运行和展示范围。
+#============================================================
+# 2. 定义KEGG GSEA函数
+#============================================================
+
+run_gsea_kegg <- function(
+    res_df,
+    id_col = "Geneid",
+    from_type = "ENSEMBL",
+    score_col = "stat",
+    organism = "mmu"
+) {
+
+  #----------------------------------------------------------
+  # 1. 整理差异分析结果
+  #----------------------------------------------------------
+
+  df <- as.data.frame(
+    res_df,
+    stringsAsFactors = FALSE
+  )
+
+  if (!id_col %in% colnames(df)) {
+    stop(
+      "结果中没有找到基因ID列：",
+      id_col
+    )
+  }
+
+  # 若没有stat，则使用log2FoldChange
+  if (!score_col %in% colnames(df)) {
+
+    if ("log2FoldChange" %in% colnames(df)) {
+
+      score_col <- "log2FoldChange"
+
+      message(
+        "没有找到stat，改用log2FoldChange排序。"
+      )
+
+    } else {
+
+      stop(
+        "结果中既没有stat，也没有log2FoldChange。"
+      )
+    }
+  }
+
+  df <- df %>%
+    dplyr::filter(
+      !is.na(.data[[id_col]]),
+      .data[[id_col]] != "",
+      !is.na(.data[[score_col]]),
+      is.finite(.data[[score_col]])
+    )
+
+  # 去除ENSEMBL版本号
+  df[[id_col]] <- sub(
+    "\\..*$",
+    "",
+    as.character(df[[id_col]])
+  )
+
+  #----------------------------------------------------------
+  # 2. ENSEMBL转换成ENTREZID
+  #----------------------------------------------------------
+
+  gene_map <- suppressMessages(
+    clusterProfiler::bitr(
+      unique(df[[id_col]]),
+      fromType = from_type,
+      toType = "ENTREZID",
+      OrgDb = org.Mm.eg.db
+    )
+  )
+
+  if (nrow(gene_map) == 0) {
+    stop("没有基因成功转换为ENTREZID。")
+  }
+
+  # Geneid对应gene_map中的ENSEMBL
+  join_by <- stats::setNames(
+    from_type,
+    id_col
+  )
+
+  df2 <- df %>%
+    dplyr::inner_join(
+      gene_map,
+      by = join_by
+    )
+
+  #----------------------------------------------------------
+  # 3. 一个ENTREZID只保留一个排序值
+  #----------------------------------------------------------
+
+  df2 <- df2 %>%
+    dplyr::group_by(
+      ENTREZID
+    ) %>%
+    dplyr::slice_max(
+      order_by = abs(.data[[score_col]]),
+      n = 1,
+      with_ties = FALSE
+    ) %>%
+    dplyr::ungroup()
+
+  #----------------------------------------------------------
+  # 4. 构建GSEA排序向量
+  #----------------------------------------------------------
+
+  gene_list <- df2[[score_col]]
+
+  names(gene_list) <- as.character(
+    df2$ENTREZID
+  )
+
+  gene_list <- sort(
+    gene_list,
+    decreasing = TRUE
+  )
+
+  # 删除可能重复的名字
+  gene_list <- gene_list[
+    !duplicated(names(gene_list))
+  ]
+
+  message(
+    "进入GSEA的基因数量：",
+    length(gene_list)
+  )
+
+  #----------------------------------------------------------
+  # 5. KEGG GSEA
+  #----------------------------------------------------------
+
+  gsea_kegg <- clusterProfiler::gseKEGG(
+    geneList = gene_list,
+    organism = organism,
+    keyType = "ncbi-geneid",
+    minGSSize = 10,
+    maxGSSize = 500,
+    pvalueCutoff = 1,
+    pAdjustMethod = "BH",
+    verbose = FALSE,
+    seed = TRUE
+  )
+
+  gsea_df <- as.data.frame(
+    gsea_kegg
+  )
+
+  list(
+    gsea = gsea_kegg,
+    table = gsea_df,
+    gene_list = gene_list,
+    mapped_table = df2,
+    score_col = score_col
+  )
+}
+
+# 原 DESeq2 比较为 RA-Control：正 NES 代表 RA 方向富集。
+gsea_RA_Emb <- run_gsea_kegg(res_Embryo$RA_vs_Control)
+gsea_RA_YS <- run_gsea_kegg(res_Yolk_sac$RA_vs_Control)
+# gseKEGG 默认需要联网读取 KEGG；版本/数据库更新可导致重跑结果变化。
+#============================================================
+# 4. 整理并合并所有GSEA结果
+#============================================================
+
+prepare_gsea_table <- function(
+    gsea_result,
+    treatment,
+    tissue,
+    comparison
+) {
+
+  result_df <- as.data.frame(
+    gsea_result$table,
+    stringsAsFactors = FALSE
+  )
+
+  if (nrow(result_df) == 0) {
+    return(data.frame())
+  }
+
+  result_df %>%
+    dplyr::mutate(
+      Treatment = treatment,
+      Tissue = tissue,
+      Comparison = comparison,
+
+      Description_clean = stringr::str_remove(
+        Description,
+        " - Mus musculus.*$"
+      ),
+
+      Direction = dplyr::case_when(
+        NES > 0 ~ paste0(
+          treatment,
+          " enriched"
+        ),
+
+        NES < 0 ~ "Control enriched",
+
+        TRUE ~ "No direction"
+      ),
+
+      neg_log10_FDR = -log10(
+        pmax(
+          p.adjust,
+          .Machine$double.xmin
+        )
+      )
+    )
+}
+
+
+
+gsea_RA_table <- bind_rows(
+  prepare_gsea_table(gsea_RA_Emb,"RA","Embryo","RA_vs_Control"),
+  prepare_gsea_table(gsea_RA_YS,"RA","Yolk sac","RA_vs_Control")
+)
+write.csv(gsea_RA_table,file.path(out_dir,"Figure4c_RA_GSEA_all.csv"),row.names=FALSE)
+saveRDS(list(Emb=gsea_RA_Emb,YS=gsea_RA_YS),file.path(out_dir,"Figure4c_RA_GSEA_objects.rds"))
+# 新增：按图中 c 的通路列表展示，不使用 notebook 中 Top10 的其他版本。
+selected_c <- list(
+  RA_Emb=c("Retinol metabolism","Propanoate metabolism","Fatty acid metabolism","Peroxisome","Protein export"),
+  RA_YS=c("Retinol metabolism","Propanoate metabolism","Fatty acid metabolism","Aminoacyl-tRNA biosynthesis")
+)
+c_df <- gsea_RA_table %>% mutate(Group=ifelse(Tissue=="Embryo","RA_Emb","RA_YS"))
+c_df <- bind_rows(lapply(names(selected_c),function(g) {
+  z <- c_df[c_df$Group==g & c_df$Description_clean %in% selected_c[[g]],,drop=FALSE]
+  missing <- setdiff(selected_c[[g]],z$Description_clean)
+  if(length(missing)) warning(g,": missing pathways: ",paste(missing,collapse=", "))
+  # 不将负 NES 取绝对值并标为 RA enriched。
+  if(any(z$NES<=0,na.rm=TRUE)) warning(g,": contains NES<=0; inspect exported table.")
+  z
+}))
+if(!nrow(c_df)) stop("Figure4c: none of the requested pathways was found.")
+c_df$Group <- factor(c_df$Group,levels=names(selected_c))
+c_df$Pathway_group <- paste(c_df$Description_clean,c_df$Group,sep="___")
+lev_c <- unlist(lapply(names(selected_c),function(g) paste(rev(selected_c[[g]]),g,sep="___")))
+c_df$Pathway_group <- factor(c_df$Pathway_group,levels=lev_c)
+p_c <- ggplot(c_df,aes(NES,Pathway_group,fill=neg_log10_FDR))+
+  geom_col(width=.72,color="black",linewidth=.25)+
+  facet_grid(Group~.,scales="free_y",space="free_y")+
+  scale_y_discrete(labels=function(x) sub("___.*$","",x))+
+  scale_fill_gradient(low="#D9D9D9",high="#FF2D2D",name=expression(-log[10](FDR)))+
+  labs(x="Normalized enrichment score",y=NULL)+theme_bw(base_size=11)+
+  theme(panel.grid.major.y=element_blank(),panel.grid.minor=element_blank())
+ggsave(file.path(out_dir,"Figure4c_RA_GSEA.pdf"),p_c,width=7,height=5)
+write.csv(c_df,file.path(out_dir,"Figure4c_selected_pathways.csv"),row.names=FALSE)
+
+# Figure4d–h 共用 VST；保留总体 HTML 中的低表达过滤与 blind=TRUE。
+dds_all <- DESeqDataSetFromMatrix(countData=round(count_mat),colData=coldata,design=~tissue+group)
+keep <- rowSums(DESeq2::counts(dds_all)>=10)>=2
+dds_all <- dds_all[keep,]
+vsd_all <- vst(dds_all,blind=TRUE)
+vst_mat <- assay(vsd_all)
+
+# 新增：明确 Geneid -> GeneName 映射，不通过匹配数量猜测 ID 类型。
+anno <- gene_anno[,c("Geneid","GeneName")]
+anno$Geneid_clean <- sub("\\..*$","",anno$Geneid)
+anno <- unique(anno)
+if(anyDuplicated(anno$Geneid_clean)) stop("Geneid annotation is ambiguous; resolve duplicate IDs first.")
+symbol <- anno$GeneName[match(sub("\\..*$","",rownames(vst_mat)),anno$Geneid_clean)]
+ok <- !is.na(symbol) & nzchar(symbol)
+if(!any(ok)) stop("No Geneid matched the annotation table.")
+# 沿用原 HTML：多个 Geneid 对应一个 GeneName 时，平均 VST 值。
+expr_sum <- rowsum(vst_mat[ok,,drop=FALSE],symbol[ok],reorder=FALSE)
+expr_mat <- expr_sum / as.numeric(table(symbol[ok])[rownames(expr_sum)])
+row_z <- function(m) {
+  z <- t(scale(t(m))); z[!is.finite(z)] <- 0
+  z[z>2.5] <- 2.5; z[z< -2.5] <- -2.5
+  z
+}
+
+# Figure4d：保留总体 HTML cell 175 的计算含义。
+gene_z <- row_z(expr_mat)
+d_df <- bind_rows(lapply(pathway_order,function(pw) {
+  genes <- intersect(unique(classic_list_simple[[pw]]),rownames(gene_z))
+  if(length(genes)<2) stop("Too few matched genes for ",pw)
+  bind_rows(lapply(group_all,function(g) {
+    ids <- rownames(coldata)[coldata$Group==g]
+    mu <- rowMeans(gene_z[genes,ids,drop=FALSE])
+    data.frame(Pathway=pw,Group=g,mean_pathway_z=mean(mu),
+               high_pct=mean(mu>0)*100,n_genes=length(genes),n_samples=length(ids))
+  }))
+}))
+# 新增：只筛选展示组，标准化仍以原16样本为基础。
+d_show <- d_df[d_df$Group %in% group_show,]
+d_show$Group <- factor(d_show$Group,levels=group_show)
+d_show$Pathway <- factor(d_show$Pathway,levels=rev(pathway_order))
+size_max <- max(1,ceiling(max(d_show$high_pct)))
+size_breaks <- sort(unique(c(c(20,40,60)[c(20,40,60)<=size_max],size_max)))
+p_d <- ggplot(d_show,aes(Group,Pathway,size=high_pct,color=mean_pathway_z))+
+  geom_point(alpha=.95)+
+  scale_color_gradient2(low="#2166AC",mid="white",high="#B2182B",midpoint=0,
+    limits=c(-.5,.5),breaks=c(-.5,-.25,0,.25,.5),oob=scales::squish,name="Mean pathway\nz-score")+
+  scale_size_continuous(range=c(4,12),limits=c(0,size_max),breaks=size_breaks,
+    name=paste0("High-expression\ngenes (%)\nmax = ",size_max))+
+  scale_y_discrete(labels=function(x) ifelse(x=="TGFB","TGFβ",x))+
+  labs(title="Signalling pathway",x=NULL,y=NULL)+theme_bw(base_size=12)+
+  theme(axis.text.x=element_text(angle=45,hjust=1,color="black"),
+        panel.grid.minor=element_blank())+
+  guides(color=guide_colorbar(order=1),size=guide_legend(order=2,override.aes=list(color="black")))
+ggsave(file.path(out_dir,"Figure4d_signalling_pathway.pdf"),p_d,width=6.5,height=5)
+write.csv(d_df,file.path(out_dir,"Figure4d_pathway_scores_all_groups.csv"),row.names=FALSE)
+write.csv(d_show,file.path(out_dir,"Figure4d_pathway_scores_displayed.csv"),row.names=FALSE)
+
+# Figure4e–h：基因集合从总体 HTML cell128/cell159 提取。
+# cell128 的 classic_gene_sets_30 仅用于 TGFB/NODAL 热图，不能代替 d 的外部 RDS。
+classic_gene_sets_30 <- list(
+  
+  RA = c(
+    "Adh1", "Adh4",
+    "Aldh1a1", "Aldh1a2", "Aldh1a3", "Aldh8a1",
+    "Crabp1", "Crabp2",
+    "Cyp26a1", "Cyp26b1", "Cyp26c1",
+    "Dhrs3", "Dhrs4", "Dhrs9",
+    "Fabp5", "Ppard",
+    "Rara", "Rarb", "Rarg",
+    "Rdh1", "Rdh10", "Rdh11", "Rdh13", "Rdh14", "Rdh5",
+    "Rxra", "Rxrb", "Rxrg",
+    "Pdk1", "Pdk4"
+  ),
+  
+  NODAL = c(
+    "Nodal", "Lefty1", "Lefty2", "Tdgf1",
+    "Acvr1b", "Acvr1c", "Acvr2a", "Acvr2b",
+    "Smad2", "Smad3", "Smad4",
+    "Foxh1", "Foxo3",
+    "Mapk1", "Mapk3",
+    "Cer1", "Gdf1", "Gdf3",
+    "Fst", "Fstl3",
+    "Pitx2", "Mixl1", "Eomes", "Lhx1", "T",
+    "Pou5f1", "Nanog",
+    "Id1", "Id2", "Id3"
+  ),
+  
+  BMP = c(
+    "Bmp2", "Bmp10", "Gdf2", "Amh", "Inhba", "Inha",
+    "Bmpr1a", "Bmpr1b", "Bmpr2",
+    "Acvr2a", "Acvr2b", "Acvrl1", "Amhr2",
+    "Smad1", "Smad4", "Smad5", "Smad6", "Smad7", "Smad9",
+    "Nog", "Grem2", "Cer1", "Chrdl1", "Fstl1",
+    "Ski", "Smurf1", "Smurf2",
+    "Tgfbr3", "Zfyve16", "Ube2d3"
+  ),
+  
+  WNT = c(
+    "Wnt3a", "Wnt5a", "Wnt5b", "Wnt7a", "Wnt7b",
+    "Wnt2b", "Wnt4", "Wnt11",
+    "Fzd1", "Fzd2", "Fzd5", "Fzd7",
+    "Lrp5", "Lrp6",
+    "Ror1", "Ror2", "Ryk",
+    "Ctnnb1", "Axin1", "Axin2", "Apc", "Gsk3b",
+    "Dvl1", "Dvl2", "Dvl3",
+    "Lef1", "Tcf7", "Tcf7l2",
+    "Dkk1", "Rspo3"
+  ),
+  
+  SHH = c(
+    "Shh", "Dhh", "Ihh",
+    "Ptch1", "Smo",
+    "Gli1", "Gli2", "Gli3",
+    "Hhip", "Gas1", "Cdon", "Sufu", "Kif7", "Gpr161",
+    "Disp2", "Hhat", "Scube2", "Notum",
+    "Dync2h1", "Dzip1", "Evc", "Evc2", "Fuz", "Intu",
+    "Ift122", "Ift140", "Ift172", "Ift52", "Ift57", "Tulp3"
+  ),
+  
+  FGF = c(
+    "Fgf1", "Fgf2", "Fgf3", "Fgf4", "Fgf5", "Fgf7",
+    "Fgf8", "Fgf9", "Fgf10", "Fgf15", "Fgf17", "Fgf18",
+    "Fgf20", "Fgf23",
+    "Fgfr1", "Fgfr3", "Fgfr4", "Fgfrl1",
+    "Frs2", "Frs3",
+    "Grb2", "Gab1", "Ptpn11",
+    "Mapk1", "Mapk3",
+    "Shc1", "Sos1",
+    "Spry2", "Spred1", "Spred2"
+  ),
+  
+  TGFB = c(
+    "Tgfb1", "Tgfbr1", "Eng",
+    "Smad1", "Smad3", "Smad6", "Smad7",
+    "Bmp2", "Bmpr1a", "Bmpr2",
+    "Serpine1", "Id1", "Id2", "Id3",
+    "Junb", "Klf10", "Pmepa1",
+    "Ski", "Skil", "Trim33", "Tgif1",
+    "Ltbp2", "Furin", "Hipk2", "Nog",
+    "Ctnnb1", "Apc", "Map3k7",
+    "Smurf1", "Smurf2"
+  )
+)
+
+#========================
+# 1. RA synthesis / catabolism / receptor genes
+#========================
+
+RA_genes <- c(
+  "Adh1", "Adh4",
+  "Rdh5", "Rdh10", "Rdh11", "Rdh13", "Rdh14",
+  "Dhrs3", "Dhrs4", "Dhrs9",
+  "Aldh1a1", "Aldh1a2", "Aldh1a3", "Aldh8a1",
+  "Cyp26a1", "Cyp26b1", "Cyp26c1",
+  "Lrat",
+  "Rbp1", "Rbp4", "Rbp7", "Stra6",
+  "Crabp1", "Crabp2", "Fabp5",
+  "Rara", "Rarb", "Rarg",
+  "Rxra", "Rxrb", "Rxrg",
+  "Rarres1", "Rarres2",
+  "Cdx1", "Cdx2",
+  "Hoxa1", "Hoxa2", "Hoxb1",
+  "Meis2", "Pbx1"
+)
+
+length(RA_genes)
+
+
+#========================
+# 2. UPR / ER stress genes — Yolk sac
+#========================
+
+UPR_ER_YS_genes <- c(
+  "Hspa5", "Hsp90b1",
+  "Atf4", "Atf6", "Xbp1", "Ern1", "Eif2ak3",
+  "Ddit3", "Ppp1r15a", "Ddit4",
+  "Dnajb9", "Dnajc3", "Hyou1",
+  "Calr", "Canx",
+  "Pdia3", "Pdia4", "Pdia6",
+  "Ero1l", "Sdf2l1", "Manf",
+  "Herpud1", "Sel1l",
+  "Derl1", "Derl2", "Derl3",
+  "Edem1", "Edem2", "Edem3",
+  "Syvn1", "Vcp",
+  "Rpn1", "Rpn2", "Ddost", "Sec61a1",
+  "Dpm1", "Dpm3", "Alg5", "Mgat1",
+  "Chac1"
+)
+
+length(UPR_ER_YS_genes)
+
+
+#========================
+# 3. UPR / ER stress genes — Embryo
+#========================
+
+UPR_ER_Emb_genes <- c(
+  "Hspa5", "Hsp90b1",
+  "Atf4", "Atf5", "Atf6",
+  "Xbp1", "Ern1", "Eif2ak3",
+  "Ddit3", "Ppp1r15a",
+  "Trib3", "Chac1", "Asns",
+  "Slc7a5", "Slc3a2", "Sesn2",
+  "Dnajb9", "Dnajc3", "Dnajc10",
+  "Hyou1", "Calr", "Canx",
+  "Pdia3", "Pdia4", "Pdia6", "Txndc5",
+  "Ero1l",
+  "Herpud1", "Sel1l",
+  "Derl1", "Derl2", "Derl3",
+  "Edem1", "Edem2", "Edem3",
+  "Syvn1", "Vcp",
+  "Creb3l1", "Creb3l2",
+  "Manf"
+)
+
+length(UPR_ER_Emb_genes)
+
+
+#========================
+# 4. HOX & Neural patterning genes
+#========================
+
+HOX_Neural_genes <- c(
+  "Hoxa1", "Hoxa2", "Hoxa3", "Hoxa4", "Hoxa5",
+  "Hoxb1", "Hoxb2", "Hoxb3", "Hoxb4", "Hoxb5",
+  "Hoxc8", "Hoxc10",
+  "Hoxd3", "Hoxd11", "Hoxd13",
+  "Cdx1", "Cdx2",
+  "Meis1", "Meis2", "Pbx1",
+  "Sox1", "Sox2", "Sox3",
+  "Otx2", "Gbx2",
+  "Pax3", "Pax6",
+  "Zic1", "Zic2",
+  "Irx3", "Irx5",
+  "En1", "En2",
+  "Dlx1", "Dlx2",
+  "Nkx2-1", "Nkx2-6",
+  "Neurog1", "Nr2e1", "Pou3f3",
+  "Fgf8", "Wnt5a", "Wnt9b"
+)
+
+length(HOX_Neural_genes)
+
+
+#========================
+# 5. 合并成 list，后面画热图/打分都可以直接用
+#========================
+
+gene_sets <- list(
+  RA_synthesis_catabolism_receptor = RA_genes,
+  UPR_ER_stress_Yolk_sac = UPR_ER_YS_genes,
+  UPR_ER_stress_Embryo = UPR_ER_Emb_genes,
+  HOX_Neural_patterning = HOX_Neural_genes
+)
+
+sapply(gene_sets, length)
+
+heatmap_sets <- list(RA=RA_genes,HOX=HOX_Neural_genes,
+                     TGFB=classic_gene_sets_30$TGFB,NODAL=classic_gene_sets_30$NODAL)
+mat_group <- sapply(group_all,function(g) rowMeans(expr_mat[,coldata$Group==g,drop=FALSE]))
+mat_group_z <- row_z(mat_group)
+ann <- data.frame(Tissue=c("YS","Emb","YS","Emb"),Condition=c("Ctrl","Ctrl","RA","RA"),row.names=group_show)
+ann_colors <- list(Tissue=c(YS="#00A087",Emb="#F39B7F"),
+                   Condition=c(Ctrl="#4DBBD5",RA="#E64B35"))
+hm_col <- colorRampPalette(c("#2C7FB8","#7FCDBB","#FFFFBF","#FDAE61","#D73027"))(100)
+letters_panel <- c(RA="e",HOX="f",TGFB="g",NODAL="h")
+match_report <- bind_rows(lapply(names(heatmap_sets),function(pw) {
+  genes <- unique(heatmap_sets[[pw]])
+  data.frame(Pathway=pw,Gene=genes,Found=genes %in% rownames(mat_group_z))
+}))
+write.csv(match_report,file.path(out_dir,"Figure4e_h_gene_match_report.csv"),row.names=FALSE)
+for(pw in names(heatmap_sets)) {
+  genes <- intersect(unique(heatmap_sets[[pw]]),rownames(mat_group_z))
+  if(length(genes)<2) stop("Too few matched heatmap genes: ",pw)
+  m <- mat_group_z[genes,group_show,drop=FALSE]
+  title <- paste0(ifelse(pw=="TGFB","TGFβ",pw)," pathway")
+  p <- pheatmap(m,color=hm_col,breaks=seq(-2.5,2.5,length.out=101),
+    annotation_col=ann,annotation_colors=ann_colors,
+    cluster_rows=TRUE,cluster_cols=FALSE,treeheight_row=0,treeheight_col=0,
+    show_rownames=TRUE,show_colnames=FALSE,border_color=NA,
+    cellwidth=18,cellheight=10,fontsize_row=8,main=title,silent=TRUE)
+  prefix <- paste0("Figure4",letters_panel[[pw]],"_",pw)
+  grDevices::pdf(file.path(out_dir,paste0(prefix,".pdf")),width=5.5,height=max(5,nrow(m)*10/72+2.5))
+  grid::grid.newpage(); grid::grid.draw(p$gtable); grDevices::dev.off()
+  write.csv(m,file.path(out_dir,paste0(prefix,"_matrix.csv")))
+  write.csv(data.frame(Gene=rownames(m)[p$tree_row$order]),
+            file.path(out_dir,paste0(prefix,"_row_order.csv")),row.names=FALSE)
+}
+writeLines(capture.output(sessionInfo()),file.path(out_dir,"sessionInfo.txt"))
