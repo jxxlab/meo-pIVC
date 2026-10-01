@@ -1,0 +1,883 @@
+# Extended Data Figure 2
+# Panels b, c, g and h
+
+RUN_B <- TRUE
+RUN_C <- TRUE
+RUN_G <- TRUE
+RUN_H <- TRUE
+RECOMPUTE_GSEA <- FALSE  # TRUE uses KEGG and requires network/database access
+
+# PANEL b: uploaded source preserved
+if (RUN_B) {
+# ============================================================
+# PIVC1 PCA of embryo samples
+# Figure-only standalone script
+#
+# R version: 4.1.3
+# Packages: readxl 1.4.1; dplyr 1.2.1; stringr 1.5.0;
+#           ggplot2 3.4.0; ggforce
+#
+# ============================================================
+
+suppressPackageStartupMessages({
+  library(readxl); library(dplyr); library(stringr)
+  library(ggplot2); library(ggforce)
+})
+
+input_file <- "data/all_sample_data_tm36.xlsx"
+output_dir <- "results"
+dir.create(output_dir, recursive=TRUE, showWarnings=FALSE)
+
+culture_colors <- c("In vivo"="#1b9e77", "In vitro"="#d95f02")
+stage_order <- c("E11","E12","D11","D12")
+
+# ------------------------------------------------------------
+# Load PIVC1 embryo data
+# ------------------------------------------------------------
+
+dat <- read_excel(input_file) %>% as.data.frame(check.names=FALSE)
+if(!"Compounds" %in% colnames(dat)) stop("Column 'Compounds' was not found.")
+
+sample_pattern <- paste0("^(", paste(stage_order, collapse="|"), ")E[0-9]+$")
+sample_cols <- colnames(dat)[str_detect(toupper(colnames(dat)), sample_pattern)]
+if(length(sample_cols)==0) stop("No PIVC1 embryo sample columns were detected.")
+
+stage_regex <- paste0("^(", paste(stage_order[order(nchar(stage_order), decreasing=TRUE)], collapse="|"), ")")
+
+sample_info <- data.frame(Sample=sample_cols, stringsAsFactors=FALSE) %>%
+  mutate(
+    Culture=ifelse(str_starts(toupper(Sample),"E"), "In vivo", "In vitro"),
+    Stage=str_extract(toupper(Sample), stage_regex),
+    Replicate=as.integer(str_extract(Sample, "[0-9]+$"))
+  ) %>%
+  mutate(
+    Culture=factor(Culture, levels=c("In vivo","In vitro")),
+    Stage=factor(Stage, levels=stage_order)
+  ) %>%
+  arrange(Culture, Stage, Replicate)
+
+mat <- dat %>% select(all_of(sample_info$Sample)) %>% as.matrix()
+storage.mode(mat) <- "numeric"
+rownames(mat) <- make.unique(as.character(dat$Compounds))
+mat_log <- log2(mat + 1)
+mat_log <- mat_log[, sample_info$Sample, drop=FALSE]
+
+if(any(!is.finite(mat_log))) {
+  stop("Non-finite values were detected after log2(x+1) transformation.")
+}
+
+# ------------------------------------------------------------
+# PCA
+# ------------------------------------------------------------
+
+pca_fit <- prcomp(t(mat_log), scale.=FALSE)
+pca_df <- data.frame(pca_fit$x[,1:2], sample_info, check.names=FALSE)
+pc_var <- round(100 * summary(pca_fit)$importance[2,1:2], 1)
+
+p <- ggplot(pca_df, aes(PC1, PC2, color=Culture)) +
+  ggforce::geom_mark_ellipse(
+    aes(fill=Culture, group=Culture),
+    alpha=0.18, color=NA, show.legend=FALSE
+  ) +
+  geom_point(size=3) +
+  geom_text(aes(label=Sample), size=5, vjust=-0.8, show.legend=FALSE) +
+  scale_color_manual(values=culture_colors) +
+  scale_fill_manual(values=culture_colors) +
+  scale_x_continuous(expand=expansion(mult=c(0.15,0.12))) +
+  scale_y_continuous(expand=expansion(mult=c(0.35,0.12))) +
+  labs(
+    title="PCA of Embryo samples",
+    x=paste0("PC1 (", pc_var[1], "%)"),
+    y=paste0("PC2 (", pc_var[2], "%)")
+  ) +
+  theme_bw(base_size=14) +
+  theme(
+    panel.grid=element_blank(),
+    panel.border=element_rect(color="black", fill=NA, size=1),
+    plot.title=element_text(hjust=0.5, face="bold", size=20),
+    axis.title=element_text(size=18),
+    axis.text=element_text(size=15),
+    legend.title=element_blank(),
+    legend.text=element_text(size=20),
+    aspect.ratio=1
+  )
+
+ggsave(
+  filename=file.path(output_dir, "PIVC1_PCA_embryo_samples.pdf"),
+  plot=p, width=7.2, height=7.2, units="in", device="pdf"
+)
+
+print(p)
+
+}
+
+# PANEL c: uploaded source preserved
+if (RUN_C) {
+# ============================================================
+# PIVC1 global stage-resolved metabolic pathway dynamics
+# Standalone figure-reproduction script
+#
+# R version: 4.1.3
+# Packages: readxl 1.4.1; dplyr 1.2.1; stringr 1.5.0;
+#           ggplot2 3.4.0; scales 1.3.0
+#
+# Analysis:
+#   log2(x+1) -> biological-replicate stage mean
+#   -> metabolite row-wise Z-score across E11/E12/D11/D12
+#   -> pathway metabolites vs remaining KEGG-mapped metabolites
+#   -> two-sided Wilcoxon rank-sum test
+#   -> directional pathway score =
+#      mean(pathway Z-score) - mean(background Z-score)
+#
+# Display:
+#   non-core pathway: retained if raw P < 0.05 at any stage
+#   core pathway: always retained
+#   bubble size: -log10(raw P value)
+#   bubble color: directional pathway score
+# ============================================================
+
+suppressPackageStartupMessages({
+  library(readxl); library(dplyr); library(stringr)
+  library(ggplot2); library(scales)
+})
+
+data_file <- "data/all_sample_data_tm36.xlsx"
+kegg_file <- "data/kegg_compound_pathway.csv"
+output_dir <- "results"
+dir.create(output_dir, recursive=TRUE, showWarnings=FALSE)
+
+stage_order <- c("E11","E12","D11","D12")
+min_pathway_metabolites <- 3L
+
+core_pathways <- c(
+  "Butanoate metabolism","Citrate cycle (TCA cycle)","Oxidative phosphorylation",
+  "Pyruvate metabolism","Pentose phosphate pathway","Glyoxylate and dicarboxylate metabolism",
+  "Nicotinate and nicotinamide metabolism","Glycolysis / Gluconeogenesis",
+  "Fatty acid degradation","Fructose and mannose metabolism","Propanoate metabolism"
+)
+
+category_order <- c(
+  "Carbohydrate & energy metabolism","Amino acid & nucleotide metabolism",
+  "Lipid metabolism","Cofactor & vitamin metabolism","Other metabolism"
+)
+
+category_labels <- c(
+  "Carbohydrate & energy metabolism"="Carbohydrate & energy\nmetabolism",
+  "Amino acid & nucleotide metabolism"="Amino acid & nucleotide\nmetabolism",
+  "Lipid metabolism"="Lipid\nmetabolism",
+  "Cofactor & vitamin metabolism"="Cofactor & vitamin\nmetabolism",
+  "Other metabolism"="Other\nmetabolism"
+)
+
+assign_category <- function(x) {
+  case_when(
+    x %in% c(
+      "Glycolysis / Gluconeogenesis","Citrate cycle (TCA cycle)","Pyruvate metabolism",
+      "Pentose phosphate pathway","Oxidative phosphorylation","Fructose and mannose metabolism",
+      "Galactose metabolism","Starch and sucrose metabolism","Propanoate metabolism",
+      "Butanoate metabolism","Pentose and glucuronate interconversions",
+      "Glyoxylate and dicarboxylate metabolism","Amino sugar and nucleotide sugar metabolism"
+    ) ~ "Carbohydrate & energy metabolism",
+
+    x %in% c(
+      "Alanine, aspartate and glutamate metabolism","Arginine biosynthesis",
+      "Arginine and proline metabolism","Aminoacyl-tRNA biosynthesis","D-Amino acid metabolism",
+      "Glycine, serine and threonine metabolism","Histidine metabolism","Glutathione metabolism",
+      "Lysine degradation","Lysine biosynthesis","Phenylalanine metabolism",
+      "Phenylalanine, tyrosine and tryptophan biosynthesis","Purine metabolism",
+      "Pyrimidine metabolism","Tryptophan metabolism","Tyrosine metabolism",
+      "Cysteine and methionine metabolism","Valine, leucine and isoleucine biosynthesis",
+      "Valine, leucine and isoleucine degradation","beta-Alanine metabolism",
+      "Taurine and hypotaurine metabolism"
+    ) ~ "Amino acid & nucleotide metabolism",
+
+    x %in% c(
+      "Biosynthesis of unsaturated fatty acids","Fatty acid biosynthesis","Fatty acid degradation",
+      "Fatty acid elongation","Arachidonic acid metabolism","alpha-Linolenic acid metabolism",
+      "Linoleic acid metabolism","Glycerolipid metabolism","Glycerophospholipid metabolism",
+      "Sphingolipid metabolism","Ether lipid metabolism","Steroid biosynthesis",
+      "Steroid hormone biosynthesis","Primary bile acid biosynthesis"
+    ) ~ "Lipid metabolism",
+
+    x %in% c(
+      "Biotin metabolism","Folate biosynthesis","One carbon pool by folate",
+      "Pantothenate and CoA biosynthesis","Porphyrin metabolism","Riboflavin metabolism",
+      "Thiamine metabolism","Vitamin B6 metabolism","Nicotinate and nicotinamide metabolism",
+      "Ubiquinone and other terpenoid-quinone biosynthesis"
+    ) ~ "Cofactor & vitamin metabolism",
+
+    TRUE ~ "Other metabolism"
+  )
+}
+
+# ------------------------------------------------------------
+# Load data and identify PIVC1 embryo samples
+# ------------------------------------------------------------
+
+dat <- read_excel(data_file) %>% as.data.frame(check.names=FALSE)
+kegg_ref <- read.csv(kegg_file, stringsAsFactors=FALSE, check.names=FALSE)
+
+if(!all(c("Compounds","cpd_ID") %in% colnames(dat))) stop("Input metabolite table requires Compounds and cpd_ID columns.")
+if(!all(c("cpd_ID","Pathway") %in% colnames(kegg_ref))) stop("KEGG mapping table requires cpd_ID and Pathway columns.")
+if(!"pathway_id" %in% colnames(kegg_ref)) kegg_ref$pathway_id <- ""
+
+sample_pattern <- paste0("^(",paste(stage_order,collapse="|"),")[._-]?E[0-9]+$")
+sample_cols <- colnames(dat)[str_detect(toupper(colnames(dat)),sample_pattern)]
+if(length(sample_cols)==0) stop("No PIVC1 embryo sample columns were detected.")
+
+stage_regex <- paste0("^(",paste(stage_order[order(nchar(stage_order),decreasing=TRUE)],collapse="|"),")")
+sample_info <- data.frame(Sample=sample_cols,stringsAsFactors=FALSE) %>%
+  mutate(Stage=str_extract(toupper(Sample),stage_regex),
+         Stage=factor(Stage,levels=stage_order)) %>%
+  filter(!is.na(Stage)) %>% arrange(Stage,Sample)
+
+stage_counts <- table(factor(sample_info$Stage,levels=stage_order))
+if(any(stage_counts==0)) stop("Missing stages: ",paste(names(stage_counts)[stage_counts==0],collapse=", "))
+
+# ------------------------------------------------------------
+# Abundance matrix -> log2(x+1) -> stage means -> row Z-scores
+# ------------------------------------------------------------
+
+mat_df <- dat %>%
+  select(Compounds,all_of(sample_info$Sample)) %>%
+  filter(!is.na(Compounds),Compounds!="") %>%
+  mutate(across(all_of(sample_info$Sample),~suppressWarnings(as.numeric(.x)))) %>%
+  group_by(Compounds) %>%
+  summarise(across(all_of(sample_info$Sample),~mean(.x,na.rm=TRUE)),.groups="drop")
+
+for(j in sample_info$Sample) mat_df[[j]][!is.finite(mat_df[[j]])] <- NA_real_
+
+mat <- as.matrix(mat_df[,sample_info$Sample,drop=FALSE])
+storage.mode(mat) <- "numeric"
+rownames(mat) <- mat_df$Compounds
+mat_log <- log2(mat+1)
+
+stage_mean <- sapply(stage_order,function(st) {
+  smp <- sample_info$Sample[as.character(sample_info$Stage)==st]
+  rowMeans(mat_log[,smp,drop=FALSE],na.rm=TRUE)
+})
+rownames(stage_mean) <- rownames(mat_log)
+colnames(stage_mean) <- stage_order
+stage_mean[!is.finite(stage_mean)] <- NA_real_
+
+row_sd <- apply(stage_mean,1,sd,na.rm=TRUE)
+keep <- rowSums(is.finite(stage_mean))==length(stage_order) & is.finite(row_sd) & row_sd>0
+stage_mean <- stage_mean[keep,,drop=FALSE]
+
+stage_z <- t(scale(t(stage_mean)))
+stage_z[!is.finite(stage_z)] <- NA_real_
+
+# ------------------------------------------------------------
+# Compound -> KEGG compound -> KEGG metabolic pathway
+# ------------------------------------------------------------
+
+cpd_raw <- data.frame(
+  Compounds=as.character(dat$Compounds),
+  cpd_raw=as.character(dat$cpd_ID),
+  stringsAsFactors=FALSE
+)
+cpd_lists <- str_extract_all(toupper(cpd_raw$cpd_raw),"C[0-9]{5}")
+
+map_met <- bind_rows(lapply(seq_len(nrow(cpd_raw)),function(i) {
+  ids <- unique(cpd_lists[[i]])
+  if(length(ids)==0) return(NULL)
+  data.frame(Compounds=cpd_raw$Compounds[i],cpd_ID=ids,stringsAsFactors=FALSE)
+})) %>%
+  filter(!is.na(Compounds),Compounds!="",!is.na(cpd_ID),cpd_ID!="") %>%
+  distinct() %>% filter(Compounds %in% rownames(stage_z))
+
+path_cpd_lists <- str_extract_all(toupper(as.character(kegg_ref$cpd_ID)),"C[0-9]{5}")
+
+pathway_map <- bind_rows(lapply(seq_len(nrow(kegg_ref)),function(i) {
+  ids <- unique(path_cpd_lists[[i]])
+  if(length(ids)==0) return(NULL)
+
+  pw <- as.character(kegg_ref$Pathway[i])
+  pw <- str_remove(pw,"\\s*-\\s*Mus musculus.*$")
+  pw <- str_remove(pw,"\\s*-\\s*Homo sapiens.*$")
+  pw <- str_squish(pw)
+
+  data.frame(
+    cpd_ID=ids,Pathway=pw,
+    pathway_id=as.character(kegg_ref$pathway_id[i]),
+    stringsAsFactors=FALSE
+  )
+})) %>%
+  mutate(
+    Pathway_code=str_extract(paste(pathway_id,Pathway),"[0-9]{5}"),
+    Pathway_num=suppressWarnings(as.numeric(Pathway_code))
+  ) %>%
+  filter(!is.na(cpd_ID),cpd_ID!="",!is.na(Pathway),Pathway!="") %>%
+  distinct()
+
+if(any(is.finite(pathway_map$Pathway_num))) {
+  pathway_map <- pathway_map %>%
+    filter(is.finite(Pathway_num),Pathway_num>=10,Pathway_num<=1299)
+}
+
+pathway_map <- pathway_map %>%
+  filter(
+    !Pathway %in% c(
+      "Metabolic pathways",
+      "Biosynthesis of secondary metabolites",
+      "Microbial metabolism in diverse environments"
+    ),
+    !str_detect(
+      Pathway,
+      regex(
+        paste(c(
+          "Drug metabolism","Metabolism of xenobiotics","Neomycin","Kanamycin",
+          "Gentamicin","Streptomycin","Penicillin","Cephalosporin","Carbapenem","Monobactam"
+        ),collapse="|"),
+        ignore_case=TRUE
+      )
+    )
+  )
+
+compound_pathway <- map_met %>%
+  inner_join(pathway_map %>% select(cpd_ID,Pathway) %>% distinct(),by="cpd_ID") %>%
+  select(Compounds,Pathway) %>% distinct() %>%
+  filter(Compounds %in% rownames(stage_z))
+
+background_metabolites <- unique(compound_pathway$Compounds)
+pathways_all <- unique(compound_pathway$Pathway)
+
+# ------------------------------------------------------------
+# Stage x pathway directional statistics
+# ------------------------------------------------------------
+
+res_list <- list()
+ii <- 1L
+
+for(pw in pathways_all) {
+  pathway_mets <- unique(compound_pathway$Compounds[compound_pathway$Pathway==pw])
+  pathway_mets <- intersect(pathway_mets,background_metabolites)
+  if(length(pathway_mets)<min_pathway_metabolites) next
+
+  background_other <- setdiff(background_metabolites,pathway_mets)
+
+  for(st in stage_order) {
+    x <- stage_z[pathway_mets,st]
+    y <- stage_z[background_other,st]
+    x <- x[is.finite(x)]
+    y <- y[is.finite(y)]
+
+    if(length(x)<min_pathway_metabolites || length(y)<10) next
+
+    p_now <- tryCatch(
+      wilcox.test(x,y,alternative="two.sided",exact=FALSE)$p.value,
+      error=function(e) NA_real_
+    )
+
+    res_list[[ii]] <- data.frame(
+      Stage=st,
+      Pathway=pw,
+      Metabolite_count=length(x),
+      Mean_pathway_Z=mean(x),
+      Mean_background_Z=mean(y),
+      Directional_score=mean(x)-mean(y),
+      P_value=p_now,
+      stringsAsFactors=FALSE
+    )
+    ii <- ii+1L
+  }
+}
+
+result_all <- bind_rows(res_list) %>%
+  group_by(Stage) %>%
+  mutate(FDR=p.adjust(P_value,method="BH")) %>%
+  ungroup() %>%
+  mutate(
+    log10P=-log10(P_value+1e-300),
+    Stage=factor(Stage,levels=stage_order)
+  )
+
+# ------------------------------------------------------------
+# Pathway categories and figure selection
+# ------------------------------------------------------------
+
+result_global <- result_all %>%
+  mutate(
+    Category=factor(assign_category(Pathway),levels=category_order),
+    Is_core=Pathway %in% core_pathways
+  )
+
+pathway_selection <- result_global %>%
+  group_by(Pathway,Category) %>%
+  summarise(
+    Is_core=any(Is_core),
+    Best_P=min(P_value,na.rm=TRUE),
+    Max_abs_score=max(abs(Directional_score),na.rm=TRUE),
+    .groups="drop"
+  ) %>%
+  filter(Is_core | Best_P<0.05)
+
+plot_global <- result_global %>%
+  filter(Pathway %in% pathway_selection$Pathway)
+
+order_global <- pathway_selection %>%
+  mutate(
+    Core_order=match(Pathway,core_pathways),
+    Core_order=ifelse(is.na(Core_order),999,Core_order)
+  ) %>%
+  arrange(Category,desc(Is_core),Core_order,desc(Max_abs_score),Best_P,Pathway)
+
+plot_global <- plot_global %>%
+  mutate(
+    Stage=factor(Stage,levels=stage_order),
+    Category=factor(Category,levels=category_order),
+    Pathway=factor(Pathway,levels=rev(order_global$Pathway))
+  )
+
+colour_limit <- as.numeric(
+  quantile(abs(plot_global$Directional_score),probs=0.95,na.rm=TRUE)
+)
+if(!is.finite(colour_limit) || colour_limit<=0) {
+  colour_limit <- max(abs(plot_global$Directional_score),na.rm=TRUE)
+}
+if(!is.finite(colour_limit) || colour_limit<=0) colour_limit <- 1
+
+# ------------------------------------------------------------
+# Final square-grid figure
+# ------------------------------------------------------------
+
+cell_cm <- 0.32
+n_stage <- length(stage_order)
+n_pathway <- n_distinct(plot_global$Pathway)
+
+category_counts <- plot_global %>%
+  distinct(Category,Pathway) %>%
+  count(Category,name="N_pathway") %>%
+  mutate(Category=factor(Category,levels=category_order)) %>%
+  arrange(Category)
+
+panel_width_cm <- n_stage*cell_cm
+panel_height_cm <- n_pathway*cell_cm
+
+p <- ggplot(plot_global,aes(x=Stage,y=Pathway)) +
+  geom_point(aes(size=log10P,colour=Directional_score),shape=16,alpha=0.93) +
+  facet_grid(
+    Category~.,scales="free_y",space="free_y",switch="y",
+    labeller=labeller(Category=category_labels)
+  ) +
+  scale_x_discrete(drop=FALSE,expand=expansion(add=0.50)) +
+  scale_y_discrete(expand=expansion(add=0.50)) +
+  scale_size_continuous(
+    name=expression(-log[10](P~value)),
+    range=c(0.80,2.30),
+    breaks=c(5,10),
+    limits=c(0,max(plot_global$log10P,na.rm=TRUE))
+  ) +
+  scale_colour_gradient2(
+    low="#2C7FB8",mid="#FFFFBF",high="#D73027",midpoint=0,
+    limits=c(-colour_limit,colour_limit),oob=scales::squish,
+    name="Directional\npathway score"
+  ) +
+  guides(
+    colour=guide_colourbar(
+      order=1,title.position="top",title.hjust=0,
+      barheight=grid::unit(2.5,"cm"),barwidth=grid::unit(0.34,"cm"),ticks=TRUE
+    ),
+    size=guide_legend(order=2,title.position="top",title.hjust=0)
+  ) +
+  labs(
+    title="PIVC1 global stage-resolved metabolic pathway dynamics",
+    subtitle="Directional pathway scores derived from stage-resolved metabolite abundance",
+    x="Developmental stage",y=NULL
+  ) +
+  theme_bw(base_size=9.2,base_family="sans") +
+  theme(
+    plot.background=element_rect(fill="white",colour=NA),
+    panel.background=element_rect(fill="white",colour=NA),
+    panel.grid.major=element_line(colour="#DEDEDE",size=0.22),
+    panel.grid.minor=element_blank(),
+    panel.border=element_rect(colour="#444444",fill=NA,size=0.50),
+    panel.spacing.y=grid::unit(0.02,"cm"),
+    plot.title=element_text(hjust=0.5,face="bold",colour="black",size=13.2,margin=margin(b=1)),
+    plot.subtitle=element_text(hjust=0.5,colour="#333333",size=7.6,margin=margin(b=4)),
+    axis.text.x=element_text(angle=90,hjust=1,vjust=0.5,colour="black",size=6.6,margin=margin(t=2)),
+    axis.title.x=element_text(face="bold",colour="black",size=9.3,margin=margin(t=5)),
+    axis.ticks.x=element_line(colour="#555555",size=0.28),
+    axis.ticks.length=grid::unit(0.07,"cm"),
+    axis.text.y=element_text(colour="black",size=6.55,lineheight=0.78,margin=margin(r=2.5)),
+    axis.ticks.y=element_blank(),
+    strip.background=element_blank(),
+    strip.placement="outside",
+    strip.text.y.left=element_text(
+      angle=90,face="bold",colour="#222222",size=6.2,
+      lineheight=0.76,margin=margin(r=4,l=3)
+    ),
+    legend.position="right",
+    legend.box="vertical",
+    legend.box.just="center",
+    legend.spacing.y=grid::unit(0.12,"cm"),
+    legend.margin=margin(0,0,0,5),
+    legend.title=element_text(face="bold",colour="black",size=7.6,lineheight=0.9),
+    legend.text=element_text(colour="black",size=6.8),
+    legend.key.height=grid::unit(0.45,"cm"),
+    legend.key.width=grid::unit(0.45,"cm"),
+    plot.margin=margin(t=5,r=5,b=7,l=8)
+  )
+
+g <- ggplotGrob(p)
+panel_layout <- g$layout[grepl("^panel",g$layout$name),]
+panel_rows <- sort(unique(panel_layout$t))
+panel_cols <- sort(unique(panel_layout$l))
+
+for(cc in panel_cols) g$widths[cc] <- grid::unit(panel_width_cm,"cm")
+for(i in seq_len(min(length(panel_rows),nrow(category_counts)))) {
+  g$heights[panel_rows[i]] <- grid::unit(category_counts$N_pathway[i]*cell_cm,"cm")
+}
+
+figure_width <- 7.50
+figure_height <- max(7.8,(panel_height_cm+4.3)/2.54)
+
+pdf_file <- file.path(output_dir,"PIVC1_global_stage_resolved_metabolic_pathway_dynamics.pdf")
+grDevices::pdf(pdf_file,width=figure_width,height=figure_height,family="sans",onefile=FALSE)
+grid::grid.newpage()
+grid::grid.draw(g)
+grDevices::dev.off()
+
+grid::grid.newpage()
+grid::grid.draw(g)
+
+}
+
+# ============================================================
+# PANEL g: 2DG GSEA, Embryo and Yolk sac
+# ============================================================
+if (RUN_G) {
+suppressPackageStartupMessages({library(dplyr); library(ggplot2); library(stringr)})
+dir.create("results", recursive=TRUE, showWarnings=FALSE)
+set.seed(777)
+if (RECOMPUTE_GSEA) {
+  suppressPackageStartupMessages({
+    library(clusterProfiler); library(org.Mm.eg.db); library(AnnotationDbi)
+  })
+run_gsea_kegg <- function(
+    res_df,
+    id_col = "Geneid",
+    from_type = "ENSEMBL",
+    score_col = "stat",
+    organism = "mmu"
+) {
+
+  #----------------------------------------------------------
+  # 1. 整理差异分析结果
+  #----------------------------------------------------------
+
+  df <- as.data.frame(
+    res_df,
+    stringsAsFactors = FALSE
+  )
+
+  if (!id_col %in% colnames(df)) {
+    stop(
+      "结果中没有找到基因ID列：",
+      id_col
+    )
+  }
+
+  # 若没有stat，则使用log2FoldChange
+  if (!score_col %in% colnames(df)) {
+
+    if ("log2FoldChange" %in% colnames(df)) {
+
+      score_col <- "log2FoldChange"
+
+      message(
+        "没有找到stat，改用log2FoldChange排序。"
+      )
+
+    } else {
+
+      stop(
+        "结果中既没有stat，也没有log2FoldChange。"
+      )
+    }
+  }
+
+  df <- df %>%
+    dplyr::filter(
+      !is.na(.data[[id_col]]),
+      .data[[id_col]] != "",
+      !is.na(.data[[score_col]]),
+      is.finite(.data[[score_col]])
+    )
+
+  # 去除ENSEMBL版本号
+  df[[id_col]] <- sub(
+    "\\..*$",
+    "",
+    as.character(df[[id_col]])
+  )
+
+  #----------------------------------------------------------
+  # 2. ENSEMBL转换成ENTREZID
+  #----------------------------------------------------------
+
+  gene_map <- suppressMessages(
+    clusterProfiler::bitr(
+      unique(df[[id_col]]),
+      fromType = from_type,
+      toType = "ENTREZID",
+      OrgDb = org.Mm.eg.db
+    )
+  )
+
+  if (nrow(gene_map) == 0) {
+    stop("没有基因成功转换为ENTREZID。")
+  }
+
+  # Geneid对应gene_map中的ENSEMBL
+  join_by <- stats::setNames(
+    from_type,
+    id_col
+  )
+
+  df2 <- df %>%
+    dplyr::inner_join(
+      gene_map,
+      by = join_by
+    )
+
+  #----------------------------------------------------------
+  # 3. 一个ENTREZID只保留一个排序值
+  #----------------------------------------------------------
+
+  df2 <- df2 %>%
+    dplyr::group_by(
+      ENTREZID
+    ) %>%
+    dplyr::slice_max(
+      order_by = abs(.data[[score_col]]),
+      n = 1,
+      with_ties = FALSE
+    ) %>%
+    dplyr::ungroup()
+
+  #----------------------------------------------------------
+  # 4. 构建GSEA排序向量
+  #----------------------------------------------------------
+
+  gene_list <- df2[[score_col]]
+
+  names(gene_list) <- as.character(
+    df2$ENTREZID
+  )
+
+  gene_list <- sort(
+    gene_list,
+    decreasing = TRUE
+  )
+
+  # 删除可能重复的名字
+  gene_list <- gene_list[
+    !duplicated(names(gene_list))
+  ]
+
+  message(
+    "进入GSEA的基因数量：",
+    length(gene_list)
+  )
+
+  #----------------------------------------------------------
+  # 5. KEGG GSEA
+  #----------------------------------------------------------
+
+  gsea_kegg <- clusterProfiler::gseKEGG(
+    geneList = gene_list,
+    organism = organism,
+    keyType = "ncbi-geneid",
+    minGSSize = 10,
+    maxGSSize = 500,
+    pvalueCutoff = 1,
+    pAdjustMethod = "BH",
+    verbose = FALSE,
+    seed = TRUE
+  )
+
+  gsea_df <- as.data.frame(
+    gsea_kegg
+  )
+
+  list(
+    gsea = gsea_kegg,
+    table = gsea_df,
+    gene_list = gene_list,
+    mapped_table = df2,
+    score_col = score_col
+  )
+}
+  obj <- readRDS("data/DESeq2_results_Embryo_YolkSac.rds")
+  # DESeq2 results must be tissue-specific 2DG-versus-Control results.
+  # Original function uses stat, falling back to log2FoldChange if absent.
+  gsea_g <- bind_rows(lapply(c("Embryo", "Yolk_sac"), function(tissue) {
+    res <- obj[[paste0("res_", tissue)]][["2DG_vs_Control"]]
+    if (is.null(res)) stop("Missing tissue-specific 2DG_vs_Control result")
+    ans <- run_gsea_kegg(res)$table
+    ans$Treatment <- "2DG"
+    ans$Tissue <- tissue
+    ans
+  }))
+  write.csv(gsea_g, "results/ExtendedData_Figure2g_GSEA_all.csv", row.names=FALSE)
+} else {
+  gsea_g <- read.csv("data/KEGG_GSEA_all_results.csv", check.names=FALSE)
+}
+required <- c("Treatment", "Tissue", "Description", "NES", "p.adjust")
+if (!all(required %in% names(gsea_g))) stop("GSEA table requires: ", paste(required, collapse=", "))
+if (anyDuplicated(gsea_g[, c("Treatment", "Tissue", "Description")])) {
+  stop("Duplicate pathway rows within a treatment/tissue; resolve input explicitly")
+}
+plot_g <- gsea_g %>%
+  filter(Treatment == "2DG", Tissue %in% c("Embryo", "Yolk sac", "Yolk_sac"),
+         is.finite(NES), NES > 0, is.finite(p.adjust)) %>%
+  mutate(Tissue=factor(ifelse(Tissue == "Embryo", "Embryo", "YS"),
+                       levels=c("Embryo", "YS")),
+         Description_clean=str_remove(Description, " - Mus musculus.*$"),
+         neg_log10_FDR=-log10(pmax(p.adjust, .Machine$double.xmin))) %>%
+  group_by(Tissue) %>% slice_max(NES, n=10, with_ties=FALSE) %>% ungroup() %>%
+  arrange(Tissue, NES) %>%
+  mutate(Pathway_group=paste(Description_clean, Tissue, sep="___"))
+if (nrow(plot_g)==0 || length(unique(plot_g$Tissue))!=2) stop("Both tissues need positive 2DG GSEA results")
+plot_g$Pathway_group <- factor(plot_g$Pathway_group, levels=unique(plot_g$Pathway_group))
+p_g <- ggplot(plot_g, aes(NES, Pathway_group, fill=neg_log10_FDR)) +
+  geom_col(width=0.72, color="black", linewidth=0.25) +
+  facet_wrap(~Tissue, scales="free_y", ncol=2,
+             labeller=labeller(Tissue=c(Embryo="2-DG Embryo", YS="2-DG YS"))) +
+  scale_y_discrete(labels=function(x) sub("___.*$", "", x)) +
+  scale_fill_gradient(low="#D9D9D9", high="#FF2D2D", name=expression(-log[10](FDR))) +
+  labs(x="Normalized enrichment score", y=NULL) +
+  theme_bw(base_size=10) +
+  theme(panel.grid.major.y=element_blank(), panel.grid.minor=element_blank(),
+        axis.text=element_text(color="black"), strip.background=element_blank(),
+        panel.spacing.x=grid::unit(1.5,"cm"))
+print(p_g)
+ggsave("results/ExtendedData_Figure2g.pdf", p_g, width=12, height=4.6)
+write.csv(plot_g, "results/ExtendedData_Figure2g_displayed_pathways.csv", row.names=FALSE)
+}
+
+# ============================================================
+# PANEL h: merged-group UPR/ER expression heatmap
+# ============================================================
+if (RUN_H) {
+suppressPackageStartupMessages({library(DESeq2); library(pheatmap)})
+dir.create("results", recursive=TRUE, showWarnings=FALSE)
+UPR_ER_YS_genes <- c(
+  "Hspa5", "Hsp90b1",
+  "Atf4", "Atf6", "Xbp1", "Ern1", "Eif2ak3",
+  "Ddit3", "Ppp1r15a", "Ddit4",
+  "Dnajb9", "Dnajc3", "Hyou1",
+  "Calr", "Canx",
+  "Pdia3", "Pdia4", "Pdia6",
+  "Ero1l", "Sdf2l1", "Manf",
+  "Herpud1", "Sel1l",
+  "Derl1", "Derl2", "Derl3",
+  "Edem1", "Edem2", "Edem3",
+  "Syvn1", "Vcp",
+  "Rpn1", "Rpn2", "Ddost", "Sec61a1",
+  "Dpm1", "Dpm3", "Alg5", "Mgat1",
+  "Chac1"
+)
+
+length(UPR_ER_YS_genes)
+
+
+#========================
+# 3. UPR / ER stress genes — Embryo
+#========================
+
+UPR_ER_Emb_genes <- c(
+  "Hspa5", "Hsp90b1",
+  "Atf4", "Atf5", "Atf6",
+  "Xbp1", "Ern1", "Eif2ak3",
+  "Ddit3", "Ppp1r15a",
+  "Trib3", "Chac1", "Asns",
+  "Slc7a5", "Slc3a2", "Sesn2",
+  "Dnajb9", "Dnajc3", "Dnajc10",
+  "Hyou1", "Calr", "Canx",
+  "Pdia3", "Pdia4", "Pdia6", "Txndc5",
+  "Ero1l",
+  "Herpud1", "Sel1l",
+  "Derl1", "Derl2", "Derl3",
+  "Edem1", "Edem2", "Edem3",
+  "Syvn1", "Vcp",
+  "Creb3l1", "Creb3l2",
+  "Manf"
+)
+
+length(UPR_ER_Emb_genes)
+
+
+
+UPR_ER_genes <- unique(c(UPR_ER_YS_genes, UPR_ER_Emb_genes))
+# Explicit metadata from the supplied notebook, not filename inference.
+meta <- data.frame(
+  sample_id=c("D1-1","D1-2","D1-3","D1-4","D1-5","D1-6",
+              "RA-1","RA-3","RA-4","RA-6",
+              "2DG-1","2DG-2","2DG-3","2DG-4","2DG-5","2DG-6"),
+  group=c(rep("Control",6), rep("RA",4), rep("2DG",6)),
+  tissue=c(rep("Yolk_sac",3),rep("Embryo",3),rep("Yolk_sac",2),rep("Embryo",2),
+           rep("Yolk_sac",3),rep("Embryo",3)),
+  stringsAsFactors=FALSE
+)
+rownames(meta) <- meta$sample_id
+meta$group <- factor(meta$group, levels=c("Control","RA","2DG"))
+meta$tissue <- factor(meta$tissue, levels=c("Embryo","Yolk_sac"))
+raw <- read.csv("data/Bulk_moe_countdata.csv", check.names=FALSE, stringsAsFactors=FALSE)
+if (!all(c("Geneid","GeneName",meta$sample_id) %in% names(raw))) {
+  stop("Bulk_moe_countdata.csv must contain Geneid, GeneName and all 16 explicitly named sample columns")
+}
+if (anyNA(raw$Geneid) || anyDuplicated(raw$Geneid)) stop("Invalid/duplicate gene IDs")
+count_mat <- as.matrix(raw[, meta$sample_id, drop=FALSE])
+storage.mode(count_mat) <- "numeric"
+if (any(!is.finite(count_mat)) || any(count_mat<0) || any(count_mat != round(count_mat))) {
+  stop("Input must be finite non-negative integer raw counts")
+}
+rownames(count_mat) <- raw$Geneid
+storage.mode(count_mat) <- "integer"
+dds <- DESeqDataSetFromMatrix(count_mat, meta, design=~tissue+group)
+keep <- rowSums(counts(dds)>=10)>=2
+if (!any(keep)) stop("No genes pass source count filter")
+dds <- dds[keep,]
+# Preserve source blind=TRUE VST. This model is used here for expression
+# transformation only, not to claim tissue-specific differential testing.
+vst_mat <- assay(vst(dds, blind=TRUE))
+symbols <- raw$GeneName[match(rownames(vst_mat), raw$Geneid)]
+use <- !is.na(symbols) & symbols!=""
+expr_sum <- rowsum(vst_mat[use,,drop=FALSE], group=symbols[use], reorder=FALSE)
+expr <- expr_sum / as.numeric(table(symbols[use])[rownames(expr_sum)])
+genes_found <- intersect(UPR_ER_genes, rownames(expr))
+writeLines(setdiff(UPR_ER_genes, genes_found), "results/ExtendedData_Figure2h_missing_genes.txt")
+if (length(genes_found)<2) stop("Fewer than two UPR/ER genes found")
+condition <- c(Control="Ctrl",RA="RA",`2DG`="DG")[as.character(meta$group)]
+tissue_short <- c(Embryo="Emb",Yolk_sac="YS")[as.character(meta$tissue)]
+groups <- paste(condition,tissue_short,sep="_")
+group_order <- c("Ctrl_YS","Ctrl_Emb","RA_YS","RA_Emb","DG_YS","DG_Emb")
+means <- sapply(group_order, function(g) rowMeans(expr[genes_found,groups==g,drop=FALSE]))
+rownames(means) <- genes_found
+z_all <- t(scale(t(means)))
+z_all[!is.finite(z_all)] <- 0
+z_all[z_all > 2.5] <- 2.5
+z_all[z_all < -2.5] <- -2.5
+show_groups <- c("Ctrl_YS","Ctrl_Emb","DG_YS","DG_Emb")
+z_show <- z_all[,show_groups,drop=FALSE]
+annotation <- data.frame(Tissue=c("YS","Embryo","YS","Embryo"),
+                         Condition=c("Ctrl","Ctrl","2-DG","2-DG"), row.names=show_groups)
+annotation_colors <- list(Tissue=c(YS="#00A087",Embryo="#F39B7F"),
+                          Condition=c(Ctrl="#4DBBD5",`2-DG`="#3C5488"))
+hm_col <- colorRampPalette(c("#2C7FB8","#7FCDBB","#FFFFBF","#FDAE61","#D73027"))(100)
+hm <- pheatmap(z_show, color=hm_col, breaks=seq(-2.5,2.5,length.out=101),
+               annotation_col=annotation, annotation_colors=annotation_colors,
+               cluster_rows=TRUE, cluster_cols=FALSE, treeheight_row=0,treeheight_col=0,
+               show_rownames=TRUE,show_colnames=FALSE,fontsize_row=7,
+               cellwidth=12,cellheight=12,border_color=NA,main="UPR_ER_genes",silent=TRUE)
+grid::grid.newpage(); grid::grid.draw(hm$gtable)
+pdf("results/ExtendedData_Figure2h.pdf",width=5.5,height=max(5,nrow(z_show)*12/72+2.5))
+grid::grid.newpage();grid::grid.draw(hm$gtable);dev.off()
+write.csv(means,"results/ExtendedData_Figure2h_group_mean_VST.csv")
+write.csv(z_all,"results/ExtendedData_Figure2h_six_group_Zscores.csv")
+write.csv(z_show[hm$tree_row$order,,drop=FALSE],"results/ExtendedData_Figure2h_displayed_Zscores.csv")
+write.csv(meta,"results/ExtendedData_Figure2h_metadata.csv",row.names=FALSE)
+}
+
