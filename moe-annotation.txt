@@ -1,0 +1,289 @@
+getwd();library(Seurat);library(Matrix);suppressMessages(library(dplyr));library(ggplot2);suppressMessages(library('pagoda2'));suppressMessages(library("velocyto.R"));suppressMessages(library(monocle));
+suppressMessages(library(cowplot));suppressMessages(library("patchwork"));suppressMessages(library(harmony))
+options(repr.plot.width=7, repr.plot.height=6); library("RColorBrewer");library(magrittr);library(scales)
+setwd("/sdb/xxjiang/memb")
+getwd()
+packageVersion('Seurat')
+
+pbmc=readRDS("moe-E9-D6-RD4-373319.rds");pbmc;names(pbmc@meta.data)
+
+table(pbmc$orig.ident)
+
+Idents(pbmc)='sample1'
+
+table(Idents(pbmc))
+
+options(repr.plot.width=7, repr.plot.height=6)
+p=DimPlot(pbmc,label = T,label.size = 8,group.by=c('C23H'),ncol=1)& theme(axis.text=element_blank(),axis.ticks=element_blank(),legend.key.height=unit(0.4,"inch"),legend.text=element_text(size=20,face="plain"),text=element_text(size=20,face="plain"))
+
+p
+
+
+pbmc1=readRDS('moe-1.8-sc-E9-D6-RD4-上皮.rds')
+
+Idents(pbmc1)='C13X'
+
+DimPlot(pbmc1,label = T,label.size = 8,ncol=1)& theme(axis.text=element_blank(),axis.ticks=element_blank(),legend.key.height=unit(0.4,"inch"),legend.text=element_text(size=20,face="plain"),text=element_text(size=20,face="plain"))
+
+options(repr.plot.width=7, repr.plot.height=6)
+pbmc1 <- ReorderIdent(pbmc1, c("PC_1"), reorder.numeric = T,reverse=F)
+DimPlot(pbmc1,label = T,label.size = 8,raster=FALSE)+ theme(axis.text=element_blank(),axis.ticks=element_blank(),legend.key.height=unit(0.29,"inch"),legend.text=element_text(size=20,face="plain"),text=element_text(size=20,face="plain"))
+
+
+Idents(pbmc1, cells = WhichCells(pbmc1,idents =12)) <- "C13"
+
+
+Idents(pbmc1, cells = WhichCells(pbmc1,idents =11)) <- "C12"
+
+
+Idents(pbmc1, cells = WhichCells(pbmc1,idents =9)) <- "C11"
+
+
+
+Idents(pbmc1, cells = WhichCells(pbmc1,idents =8)) <- "C10"
+
+Idents(pbmc1, cells = WhichCells(pbmc1,idents =10)) <- "C9"
+
+Idents(pbmc1, cells = WhichCells(pbmc1,idents =7)) <- "C8"
+
+Idents(pbmc1, cells = WhichCells(pbmc1,idents =5))  <- "C6"
+
+Idents(pbmc1, cells = WhichCells(pbmc1,idents =4)) <- "C4"
+
+
+
+Idents(pbmc1, cells = WhichCells(pbmc1,idents =3))  <- "C3"
+Idents(pbmc1, cells = WhichCells(pbmc1,idents =2))  <- "C2"
+
+Idents(pbmc1, cells = WhichCells(pbmc1,idents =6))  <- "C1"
+Idents(pbmc1, cells = WhichCells(pbmc1,idents =1))  <- "C1"
+
+DimPlot(pbmc1,label = T,label.size = 8,raster=FALSE)+ theme(axis.text=element_blank(),axis.ticks=element_blank(),legend.key.height=unit(0.29,"inch"),legend.text=element_text(size=20,face="plain"),text=element_text(size=20,face="plain"))
+
+pbmc1$CA=Idents(pbmc1)
+
+table(pbmc1$CA)
+
+Idents(pbmc1)='CA'
+
+
+
+
+
+names(pbmc1@meta.data)
+
+pbmc2=readRDS('moe-1.8-sc-E9-D6-RD4-内皮.rds')
+
+names(pbmc2@meta.data)
+
+Idents(pbmc2)='C13X'
+
+DimPlot(pbmc2,label = T,label.size = 8,ncol=1)& theme(axis.text=element_blank(),axis.ticks=element_blank(),legend.key.height=unit(0.4,"inch"),legend.text=element_text(size=20,face="plain"),text=element_text(size=20,face="plain"))
+
+
+Idents(pbmc2, cells = WhichCells(pbmc2,idents =13)) <- "C6"
+Idents(pbmc2, cells = WhichCells(pbmc2,idents =12)) <- "C6"
+Idents(pbmc2, cells = WhichCells(pbmc2,idents =11)) <- "C6"
+Idents(pbmc2, cells = WhichCells(pbmc2,idents =10)) <- "C6"
+Idents(pbmc2, cells = WhichCells(pbmc2,idents =7)) <- "C6"
+
+Idents(pbmc2, cells = WhichCells(pbmc2,idents =9)) <- "C5"
+Idents(pbmc2, cells = WhichCells(pbmc2,idents =6)) <- "C4"
+Idents(pbmc2, cells = WhichCells(pbmc2,idents =5))  <- "C3"
+Idents(pbmc2, cells = WhichCells(pbmc2,idents =4)) <- "C2"
+
+
+
+Idents(pbmc2, cells = WhichCells(pbmc2,idents =8))  <- "C1"
+Idents(pbmc2, cells = WhichCells(pbmc2,idents =3))  <- "C1"
+Idents(pbmc2, cells = WhichCells(pbmc2,idents =2))  <- "C1"
+Idents(pbmc2, cells = WhichCells(pbmc2,idents =1))  <- "C1"
+
+
+
+DimPlot(pbmc2,label = T,label.size = 8,ncol=1)& theme(axis.text=element_blank(),axis.ticks=element_blank(),legend.key.height=unit(0.4,"inch"),legend.text=element_text(size=20,face="plain"),text=element_text(size=20,face="plain"))
+
+pbmc2$CA=Idents(pbmc2)
+
+
+
+
+
+
+
+
+
+pbmc3=readRDS('moe-1.8-sc-E9-D6-RD4-中胚层.rds')
+
+DimPlot(pbmc3,label = T,label.size = 8,ncol=1)& theme(axis.text=element_blank(),axis.ticks=element_blank(),legend.key.height=unit(0.4,"inch"),legend.text=element_text(size=20,face="plain"),text=element_text(size=20,face="plain"))
+
+Idents(pbmc3)='CA'
+
+DimPlot(pbmc3,label = T,label.size = 8,ncol=1)& theme(axis.text=element_blank(),axis.ticks=element_blank(),legend.key.height=unit(0.4,"inch"),legend.text=element_text(size=20,face="plain"),text=element_text(size=20,face="plain"))
+
+
+
+
+
+pbmc4=readRDS('moe-1.8-sc-E9-D6-RD4-神经.rds')
+
+DimPlot(pbmc4,label = T,label.size = 8,ncol=1)& theme(axis.text=element_blank(),axis.ticks=element_blank(),legend.key.height=unit(0.4,"inch"),legend.text=element_text(size=20,face="plain"),text=element_text(size=20,face="plain"))
+
+Idents(pbmc4)='C16X'
+
+DimPlot(pbmc4,label = T,label.size = 8,ncol=1)& theme(axis.text=element_blank(),axis.ticks=element_blank(),legend.key.height=unit(0.4,"inch"),legend.text=element_text(size=20,face="plain"),text=element_text(size=20,face="plain"))
+
+Idents(pbmc4, cells = WhichCells(pbmc4,idents =14)) <- "C1"
+
+Idents(pbmc4, cells = WhichCells(pbmc4,idents =1)) <- "C15"
+
+Idents(pbmc4, cells = WhichCells(pbmc4,idents =4)) <- "C14"
+
+Idents(pbmc4, cells = WhichCells(pbmc4,idents =10)) <- "C13"
+
+Idents(pbmc4, cells = WhichCells(pbmc4,idents =2)) <- "C12"
+
+Idents(pbmc4, cells = WhichCells(pbmc4,idents =3)) <- "C11"
+
+Idents(pbmc4, cells = WhichCells(pbmc4,idents =13)) <- "C10"
+
+Idents(pbmc4, cells = WhichCells(pbmc4,idents =15)) <- "C9"
+
+Idents(pbmc4, cells = WhichCells(pbmc4,idents =6)) <- "C8"
+Idents(pbmc4, cells = WhichCells(pbmc4,idents =5)) <- "C7"
+Idents(pbmc4, cells = WhichCells(pbmc4,idents =7))  <- "C6"
+Idents(pbmc4, cells = WhichCells(pbmc4,idents =8))  <- "C5"
+Idents(pbmc4, cells = WhichCells(pbmc4,idents =9)) <- "C4"
+
+Idents(pbmc4, cells = WhichCells(pbmc4,idents =12))  <- "C3"
+Idents(pbmc4, cells = WhichCells(pbmc4,idents =11))  <- "C2"
+Idents(pbmc4, cells = WhichCells(pbmc4,idents =16))  <- "C1"
+
+DimPlot(pbmc4,label = T,label.size = 8,ncol=1)& theme(axis.text=element_blank(),axis.ticks=element_blank(),legend.key.height=unit(0.4,"inch"),legend.text=element_text(size=20,face="plain"),text=element_text(size=20,face="plain"))
+
+table(Idents(pbmc4))
+
+pbmc4$CA=Idents(pbmc4)
+
+Idents(pbmc1)='CA'
+Idents(pbmc2)='CA'
+Idents(pbmc3)='CA'
+Idents(pbmc4)='CA'
+
+
+
+
+
+
+
+
+
+Idents(pbmc, cells = WhichCells(pbmc4,idents ="C15")) <- '24 Di/mesencephalon inhibitor neurons'
+Idents(pbmc, cells = WhichCells(pbmc4,idents ="C14")) <-'21 Di/mesencephalon excitatory neurons' 
+Idents(pbmc, cells = WhichCells(pbmc4,idents ="C13")) <- '17 Roof plate'
+Idents(pbmc, cells = WhichCells(pbmc4,idents ="C12")) <- '22 Spinal cord inhibitory/excitatory neurons'
+Idents(pbmc, cells = WhichCells(pbmc4,idents ="C11")) <- '20 Intermediate progenitor cells'
+Idents(pbmc, cells = WhichCells(pbmc4,idents ="C10")) <- '15 Retinal pigment cells'
+Idents(pbmc, cells = WhichCells(pbmc4,idents ="C9")) <- '27 Neural crest (PNS glia)'
+Idents(pbmc, cells = WhichCells(pbmc4,idents ="C8")) <- '23 Inhibitory interneurons'
+Idents(pbmc, cells = WhichCells(pbmc4,idents ="C7")) <- '25 Motor neurons'
+Idents(pbmc, cells = WhichCells(pbmc4,idents ="C6"))  <- '26 Neural crest(PNS neurons)'
+Idents(pbmc, cells = WhichCells(pbmc4,idents ="C5"))  <- '19 Neuron progenitor cells'
+Idents(pbmc, cells = WhichCells(pbmc4,idents ="C4")) <- '18 Floorplate'
+Idents(pbmc, cells = WhichCells(pbmc4,idents ="C3"))  <- '16 Mesencephalon/Midbrain-Hindbrain Boundary(MHB)'
+Idents(pbmc, cells = WhichCells(pbmc4,idents ="C2"))  <- '14 Telecephalon/Diencephalon (Tele/Di)'
+Idents(pbmc, cells = WhichCells(pbmc4,idents ="C1"))  <- '13 Neuromesodermal progenitors'
+
+
+
+
+Idents(pbmc, cells = WhichCells(pbmc2,idents ="C6"))  <- '43 Primitive erythroid cells'
+Idents(pbmc, cells = WhichCells(pbmc2,idents ="C5"))  <- '44 Definitive erythroid cells'
+Idents(pbmc, cells = WhichCells(pbmc2,idents ="C4")) <- '39 Visceral endoderm '
+Idents(pbmc, cells = WhichCells(pbmc2,idents ="C3"))  <- '42 Megakaryocytes'
+Idents(pbmc, cells = WhichCells(pbmc2,idents ="C2"))  <- '41 Blood progenitors'
+Idents(pbmc, cells = WhichCells(pbmc2,idents ="C1"))  <-   '40 Endothelium'
+
+Idents(pbmc, cells = WhichCells(pbmc1,idents ="C13")) <-'34 Renal epithelium'
+Idents(pbmc, cells = WhichCells(pbmc1,idents ="C12")) <- '35 Thyroid epithelium'
+Idents(pbmc, cells = WhichCells(pbmc1,idents ="C11")) <- '38 Trophoblast cells'
+Idents(pbmc, cells = WhichCells(pbmc1,idents ="C10")) <- '36 Notochord'
+Idents(pbmc, cells = WhichCells(pbmc1,idents ="C9")) <- '29 Branchial arch epithelium'
+Idents(pbmc, cells = WhichCells(pbmc1,idents ="C8")) <- "37 Extraembryonic ectoderm"
+Idents(pbmc, cells = WhichCells(pbmc1,idents ="C6"))  <- '31 Pharyngeal pouch endoderm'
+Idents(pbmc, cells = WhichCells(pbmc1,idents ="C4")) <- '33 Otic epithelium'
+Idents(pbmc, cells = WhichCells(pbmc1,idents ="C3"))  <- '32 Gut/lung/Pancreatic epithelium/hepatocytes'
+Idents(pbmc, cells = WhichCells(pbmc1,idents ="C2"))  <- '30 Olfactory epithelium'
+Idents(pbmc, cells = WhichCells(pbmc1,idents ="C1"))  <- '28 Somite'
+
+
+Idents(pbmc, cells = WhichCells(pbmc3,idents ="C12")) <- '5 Osteoblast progenitors2'
+Idents(pbmc, cells = WhichCells(pbmc3,idents ="C11")) <- '8 Skeletal muscle progenitors'
+Idents(pbmc, cells = WhichCells(pbmc3,idents ="C10")) <- '4 Osteoblast progenitors 1'
+Idents(pbmc, cells = WhichCells(pbmc3,idents ="C9")) <- '9 Myocytes'
+Idents(pbmc, cells = WhichCells(pbmc3,idents ="C8")) <- '11 Splanchnic mesoderm '
+Idents(pbmc, cells = WhichCells(pbmc3,idents ="C7")) <- '2 Paraxial mesoderm '
+Idents(pbmc, cells = WhichCells(pbmc3,idents ="C6"))  <- '1 Neuroectoderm(Rostral and Caudal)'
+Idents(pbmc, cells = WhichCells(pbmc3,idents ="C5"))  <- '10 Intermediate mesoderm'
+Idents(pbmc, cells = WhichCells(pbmc3,idents ="C4")) <- '12 Cardiomyocytes'
+Idents(pbmc, cells = WhichCells(pbmc3,idents ="C3"))  <- '3 limb mesenchymal progenitors 1'
+Idents(pbmc, cells = WhichCells(pbmc3,idents ="C2"))  <- '6 Early chondrocytes'
+Idents(pbmc, cells = WhichCells(pbmc3,idents ="C1"))  <-'7 Chondrocyte and osteoblast progenitors 1' 
+
+table(Idents(pbmc))
+
+lv <- levels(Idents(pbmc))
+
+# 提取每个 level 开头前1~2位数字
+num <- as.numeric(sub("^\\s*([0-9]{1,2}).*", "\\1", lv))
+
+# 按数字排序后的新 levels
+new_lv <- lv[order(num)]
+
+# 重新设置顺序
+Idents(pbmc) <- factor(Idents(pbmc), levels = new_lv)
+
+# 查看结果
+table(Idents(pbmc))
+
+pbmc$Type1=Idents(pbmc)
+
+new.cluster.ids <- 1:44
+names(new.cluster.ids) <- levels(pbmc)
+pbmc <- RenameIdents(pbmc, new.cluster.ids)
+
+pbmc$CX1=Idents(pbmc)
+
+names(pbmc@meta.data)
+
+options(repr.plot.width=20, repr.plot.height=19)
+DimPlot(pbmc,label = T,label.size = 8,ncol=1)& theme(axis.text=element_blank(),axis.ticks=element_blank(),legend.key.height=unit(0.4,"inch"),legend.text=element_text(size=20,face="plain"),text=element_text(size=20,face="plain"))
+
+Idents(pbmc)='Type1'
+
+table(Idents(pbmc))
+
+y2=c("#625447","#AF655D",'#FF4A46','#FFAA46','#FF4AF6', '#107E73', '#7A9641', '#1A9641','#7A96F1','#89B1B2', '#B86F00', '#59B246', '#B9B246','#59B2F6','#7070FF',  #Posterior Spinal Cord Floor Plate
+   '#695034','#697034','#790034','#193034','#3920F4','#692094','#6920C4','#6920F4', '#12ED4B', '#98FE7F',
+     '#BFFE7F','#D8FE7F','#F8FE7F','#98FEBF','#98FEDF','#98FEFF','#BC9BA6', '#7C8E78', '#E171D5','#E1F1D5',
+     '#E1B1D5','#E1D1D5','#E191D5','#FF0000','#FFAA00','#AAFF00','#00FF00','#00FFAA','#00AAFF','#0000FF','#AA00FF','#FF00AA','#BB82AB','#BB52AB','#BB12AB', '#2A6221', '#2AA221','#26382C', '#D0AEAD','#D0AEFD', '#D0AE0D', '#496594', '#096594',  '#490594', '#796594', '#4965D4', '#13393C','#13693C', '#10499A', #Node
+            "#FECA10",   '#8F8F33', '#FEF633', '#DAB201','#FF5C5C', '#773333', '#FF5C03', '#F49E61','#F411FF', '#01AD01', '#88AD88',   #Olf./Len. Placode
+  '#BE66FF','#DBBB94', "#9B6662","#87BDFB","#C394C1","#0A3D62","#59D9E2","#BBD630","#557BC6","#557BFF","#00BDC1", #Dermomyotome
+  "#E3C839","#E34039","#456421","#45C421","#8CB1CB", '#D3E738', '#5C6EDB', '#497091','#492091','#097091','#D67EAE',  '#5A0048', '#FB8D80', '#BB8D80', '#79722C', '#B31D89', '#342B6C', '#A34B7B',  '#9A0048', #Splanch Mesoderm 
+                                          '#F9DFE6',"#139690",   '#FFD630', '#DFF630','#E25F7F', '#A25F7F', "#FF477D","#EE1100","#C7ECFF", "#C7ACFF",#Gut Mesenchyme 
+  "#C97618","#512A87","#FF7D99","#FF5DFF","#FF1DFF",'#FFBA91','#FF6A91', '#8DE2BB', '#006600',  '#009966','#00BBBB', '#00FFFF', '#0000AA', '#4444FF',  '#BBBBFF',
+     '#7C2947', '#6D4949','#FF0101', '#C82228', '#C85555', '#C89999', #Hematopoietic Progenito
+                      "#F35C99","#7CBB73","#94E1FF","#FDB5FF","#0101FF","#F693BF","#AC3E3D","#FE00B0", #Midgut
+  "#95B7D2","#FDB5AF","#ADB5FF","#E65538","#FBBDCA","#7C6673","#949494","#555577","#1A1A1A")
+
+Idents(pbmc)="CX1"
+options(repr.plot.width=30, repr.plot.height=6)
+p=DimPlot(pbmc,label = T,label.size = 8,  ncol=1,raster=FALSE,repel=T)+ 
+theme(axis.line=element_blank(),axis.title=element_blank(),axis.text=element_blank(),axis.ticks=element_blank(),legend.text=element_text(size=20,face="plain"),legend.key.height=unit(0.35,"inch"),text=element_text(size=20,face="plain"),strip.text=element_text(size=20)) + 
+scale_colour_manual(values=y2,labels =rownames(table(pbmc$Type1))) +guides(col = guide_legend(override.aes=list(size=3),ncol =3)) 
+ggsave( "moe-CX1.pdf", plot=(p) ,width = 32, height =10,dpi = 300,limitsize = FALSE)
+
+pbmc
+
+saveRDS(pbmc,"moe-E9-D6-RD4-373319.rds")
+
