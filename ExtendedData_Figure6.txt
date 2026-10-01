@@ -1,0 +1,1050 @@
+﻿# Extended Data Figure 6: Integrated analysis and plotting code
+
+# PANEL GUIDE
+# a: Experimental schematic. No original schematic source code was supplied.
+# b: Detected genes per cell (nFeature_RNA), grouped by stage/culture day.
+# c: Existing integrated UMAP split by stage/culture day; 44 clusters.
+# d: Whole-embryo age model; three-fold Vivo CV and in vitro predictions.
+# e: Pearson correlations between cluster-average RNA scale.data profiles.
+# f: Placode marker dot plot, faceted by culture condition.
+# g: P1-P6 proportions within all placode cells at each stage/day.
+# h: X1-X7 marker dot plot, faceted by culture condition.
+# i: X1-X7 proportions within all selected gut/endoderm cells at each stage/day.
+
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(Matrix)
+  library(edgeR)
+  library(limma)
+  library(dplyr)
+  library(tidyr)
+  library(tibble)
+  library(ggplot2)
+  library(patchwork)
+  library(corrplot)
+  library(scales)
+})
+set.seed(123)
+main_rds <- "moe-E9-D6-RD4-373319.rds"
+placode_rds <- "moe-sc-placodes-8255.rds"
+gut_rds <- "moe-sc-Gut-endoderm-C12-13-7028-new.rds"
+out_dir <- "ExtendedData_Figure6_output"
+dir.create(out_dir, recursive=TRUE, showWarnings=FALSE)
+stopifnot(file.exists(main_rds))
+pbmc <- readRDS(main_rds)
+DefaultAssay(pbmc) <- "RNA"
+stage_order <- c("E9","E10","E11","E12","RD1","RD2","RD3","RD4","D1","D2","D3","D4","D5","D6")
+culture_order <- c("Vivo","Vitro1","Vitro2")
+culture_labels <- c(Vivo="in vivo",Vitro1="meo-pIVC1",Vitro2="meo-pIVC2")
+stage_labels <- setNames(c(paste0("E",9:12),paste("Day",1:4),paste("Day",1:6)),stage_order)
+stage_culture <- setNames(c(rep("Vivo",4),rep("Vitro1",4),rep("Vitro2",6)),stage_order)
+prepare_meta <- function(obj) {
+  stopifnot(all(c("sample1","sample2") %in% names(obj[[]])))
+  st <- as.character(obj$sample1); cu <- as.character(obj$sample2)
+  stopifnot(!anyNA(st),!anyNA(cu),all(st %in% stage_order),
+            identical(unname(stage_culture[st]),cu))
+  obj$sample1 <- factor(st,levels=stage_order)
+  obj$sample2 <- factor(cu,levels=culture_order)
+  obj
+}
+pbmc <- prepare_meta(pbmc)
+save_plot <- function(p,name,w,h) {
+  ggsave(file.path(out_dir,paste0(name,".pdf")),p,width=w,height=h)
+  ggsave(file.path(out_dir,paste0(name,".png")),p,width=w,height=h,dpi=300)
+}
+
+# Panel a: schematic requires a separate drawing source; no invented source block.
+
+# Panel b: stage/day violin plot, based on chutu cells 19/22.
+cols_stage <- c(E9="#E64B35",E10="#00A087",E11="#F39B7F",E12="#91D1C2",
+  RD1="#4DBBD5",RD2="#3C5488",RD3="#7E62A3",RD4="#DC0000",
+  D1="#8C564B",D2="#C77CFF",D3="#1F78B4",D4="#E7298A",D5="#E6AB02",D6="#66A61E")
+b_df <- pbmc[[]][,c("sample1","sample2","nFeature_RNA")]
+p_b <- ggplot(b_df,aes(sample1,nFeature_RNA,fill=sample1))+
+  geom_violin(trim=FALSE)+stat_boxplot(geom="errorbar",width=.1)+
+  geom_boxplot(width=.15,fill="white",outlier.shape=NA)+
+  facet_grid(.~sample2,scales="free_x",space="free_x",labeller=labeller(sample2=culture_labels))+
+  scale_x_discrete(labels=stage_labels)+scale_fill_manual(values=cols_stage)+
+  labs(x=NULL,y="Numbers of detected genes")+theme_classic(base_size=11)+
+  theme(legend.position="none",axis.text.x=element_text(angle=45,hjust=1),
+        strip.background=element_blank())
+save_plot(p_b,"ExtendedData_Figure6b_detected_genes",12,4)
+write.csv(b_df,file.path(out_dir,"Figure6b_cell_metadata.csv"),row.names=TRUE)
+
+# Panel c: keep the existing integrated UMAP; split into three culture rows.
+stopifnot("CX1" %in% names(pbmc[[]]),"umap" %in% names(pbmc@reductions))
+# Explicitly accept the CX1 numbering formats used in the supplied scripts.
+cx_raw <- as.character(pbmc$CX1)
+cx_num <- sub("^CX1_","",cx_raw)
+cx_num <- sub(" .*","",cx_num)
+stopifnot(!anyNA(cx_num),all(cx_num %in% as.character(1:44)))
+pbmc$CX1_plot <- factor(cx_num,levels=as.character(1:44))
+cluster_cols <- c("#FCFF00", "#BD84B0", "#456722", "#FFAAFF", "#BF9D88", "#4A6798",
+  "#FACB12", "#0F4A9C", "#FFD731", "#685ED8", "#E3CB3A", "#683ED8",
+  "#2FDA00", "#A64D7E", "#AAFFAA", "#9D0049", "#5ADBE4", "#772600",
+  "#89C1F5", "#BD3400", "#3F84AA", "#DDAA22", "#5581CA", "#dea93c",
+  "#2F4A60", "#F79083", "#127D4C", "#FF7F9C", "#2F9A00", "#B51D8D",
+  "#549E79", "#E85639", "#00BFC4", "#FF5C00", "#005579", "#FBBE92",
+  "#532C5A", "#E3CB9A", "#532C8A", "#DABE99", "#7C2A47", "#F9DFE6",
+  "#635547", "#C594BF", "#D5E839", "#683EA8", "#C19F70")
+
+cluster_cols <- setNames(cluster_cols[1:44],as.character(1:44))
+Idents(pbmc) <- "CX1_plot"
+c_rows <- lapply(culture_order,function(cu) {
+  ids <- colnames(pbmc)[pbmc$sample2==cu]
+  z <- subset(pbmc,cells=ids)
+  p <- DimPlot(z,reduction="umap",split.by="sample1",label=TRUE,
+    label.size=3,repel=TRUE,raster=FALSE,ncol=ifelse(cu=="Vitro2",6,4),
+    cols=cluster_cols)+NoLegend()
+  p & theme(axis.line=element_blank(),axis.title=element_blank(),
+            axis.text=element_blank(),axis.ticks=element_blank())
+})
+for(j in seq_along(culture_order)) save_plot(c_rows[[j]],
+  paste0("ExtendedData_Figure6c_",culture_order[j]),ifelse(j==3,18,12),3.5)
+
+# Panel d: fill the sample_info dependency omitted in the model notebook.
+# Replicate IDs come from today's strict 42-replicate file, not positional relabeling.
+replicate_col <- "orig.ident"
+expected_replicates <- c(
+  "E9E1",  "E9E2",  "E9E3",
+  "E10E1", "E10E2", "E10E3",
+  "E11E1", "E11E2", "E11E3",
+  "E12E1", "E12E2", "E12E3",
+
+  "RD1E1", "RD1E2", "RD1E3",
+  "RD2E1", "RD2E2", "RD2E3",
+  "RD3E1", "RD3E2", "RD3E3",
+  "RD4E1n", "RD4E2", "RD4E3n",
+
+  "D1E1n", "D1E2n", "D1E3",
+  "D2E1",  "D2E2",  "D2E3",
+  "D3E1",  "D3E2",  "D3E3",
+  "D4E1",  "D4E2",  "D4E3",
+  "D5E1",  "D5E2",  "D5E3",
+  "D6E1",  "D6E2",  "D6E3"
+)
+stopifnot(replicate_col %in% names(pbmc[[]]))
+cell_sample <- as.character(pbmc[[]][[replicate_col]])
+stopifnot(!anyNA(cell_sample),setequal(unique(cell_sample),expected_replicates))
+sample_info <- data.frame(sample_id=expected_replicates,stringsAsFactors=FALSE)
+sample_info$timepoint <- sub("E[123]n?$","",sample_info$sample_id)
+sample_info$culture <- unname(stage_culture[sample_info$timepoint])
+sample_info$time_num <- as.numeric(sub("^(RD|D|E)","",sample_info$timepoint))
+sample_info$stage_num <- ifelse(sample_info$culture=="Vivo",sample_info$time_num,NA_real_)
+sample_info$culture_day <- ifelse(sample_info$culture=="Vivo",sample_info$time_num-8,sample_info$time_num)
+stopifnot(!anyNA(sample_info$culture),all(table(sample_info$timepoint)==3))
+stopifnot(identical(as.character(pbmc$sample1),sample_info$timepoint[match(cell_sample,sample_info$sample_id)]))
+raw_counts <- GetAssayData(pbmc,assay="RNA",slot="counts")
+stopifnot(identical(colnames(raw_counts),rownames(pbmc[[]])))
+raw_values <- if(inherits(raw_counts,"sparseMatrix")) raw_counts@x else as.vector(raw_counts)
+stopifnot(all(is.finite(raw_values)),all(raw_values>=0),all(abs(raw_values-round(raw_values))<1e-8))
+sample_factor <- factor(cell_sample,levels=sample_info$sample_id)
+sample_design <- Matrix::sparse.model.matrix(~0+sample_factor)
+colnames(sample_design) <- sample_info$sample_id
+pb_counts <- raw_counts %*% sample_design
+stopifnot(identical(colnames(pb_counts),sample_info$sample_id),all(Matrix::colSums(pb_counts)>0))
+rownames(sample_info) <- sample_info$sample_id
+write.csv(sample_info,file.path(out_dir,"Figure6d_sample_info.csv"),row.names=FALSE)
+
+# Source model HTML: cell 13 (zero-based extraction index).
+#========================
+# 10. 仅使用Vivo样本过滤低表达基因
+#========================
+
+vivo_index <- sample_info$culture == "Vivo"
+
+vivo_stage_group <- factor(
+  sample_info$stage_num[vivo_index],
+  levels = c(9, 10, 11, 12)
+)
+
+dge_vivo_filter <- edgeR::DGEList(
+  counts = pb_counts[, vivo_index, drop = FALSE]
+)
+
+keep_genes <- edgeR::filterByExpr(
+  y = dge_vivo_filter,
+  group = vivo_stage_group
+)
+
+cat(
+  "过滤前基因数：",
+  nrow(pb_counts),
+  "\n"
+)
+
+cat(
+  "过滤后基因数：",
+  sum(keep_genes),
+  "\n"
+)
+
+pb_counts_filtered <- pb_counts[
+  keep_genes,
+  ,
+  drop = FALSE
+]
+
+dim(pb_counts_filtered)
+
+
+# Source model HTML: cell 14 (zero-based extraction index).
+#========================
+# 11. 全部42个样本进行TMM标准化
+#========================
+
+dge_all <- edgeR::DGEList(
+  counts = pb_counts_filtered,
+  samples = sample_info
+)
+
+dge_all <- edgeR::calcNormFactors(
+  dge_all,
+  method = "TMM"
+)
+
+logCPM_all <- edgeR::cpm(
+  dge_all,
+  log = TRUE,
+  prior.count = 1
+)
+
+dim(logCPM_all)
+
+
+# Source model HTML: cell 27 (zero-based extraction index).
+library(edgeR)
+library(limma)
+library(dplyr)
+library(tibble)
+library(ggplot2)
+
+#========================
+# 24. 建立Vivo交叉验证分组
+#========================
+
+vivo_cv_meta <- sample_info %>%
+  dplyr::filter(
+    culture == "Vivo"
+  ) %>%
+  dplyr::mutate(
+    cv_fold = sub(
+      pattern = ".*(E[123])n?$",
+      replacement = "\\1",
+      x = sample_id
+    )
+  )
+
+# 每个fold在E9、E10、E11、E12各有1个样本
+table(
+  vivo_cv_meta$stage_num,
+  vivo_cv_meta$cv_fold
+)
+
+
+# Source model HTML: cell 28 (zero-based extraction index).
+#========================
+# 25. 每个训练集重新筛选年龄基因
+#========================
+
+select_age_signature <- function(
+  train_ids,
+  n_each = 250
+) {
+  
+  train_meta <- sample_info[
+    match(
+      train_ids,
+      sample_info$sample_id
+    ),
+    ,
+    drop = FALSE
+  ]
+  
+  train_counts <- pb_counts_filtered[
+    ,
+    train_ids,
+    drop = FALSE
+  ]
+  
+  dge_train <- edgeR::DGEList(
+    counts = train_counts
+  )
+  
+  dge_train <- edgeR::calcNormFactors(
+    dge_train,
+    method = "TMM"
+  )
+  
+  design_train <- model.matrix(
+    ~ stage_num,
+    data = train_meta
+  )
+  
+  colnames(design_train) <- c(
+    "Intercept",
+    "Age"
+  )
+  
+  voom_train <- limma::voom(
+    dge_train,
+    design_train,
+    plot = FALSE
+  )
+  
+  fit_train <- limma::lmFit(
+    voom_train,
+    design_train
+  )
+  
+  fit_train <- limma::eBayes(
+    fit_train,
+    robust = TRUE
+  )
+  
+  gene_stats <- limma::topTable(
+    fit_train,
+    coef = "Age",
+    number = Inf,
+    sort.by = "none"
+  ) %>%
+    tibble::rownames_to_column("gene")
+  
+  stage_means <- sapply(
+    c(9, 10, 11, 12),
+    function(current_stage) {
+      
+      rowMeans(
+        voom_train$E[
+          ,
+          train_meta$stage_num ==
+            current_stage,
+          drop = FALSE
+        ]
+      )
+    }
+  )
+  
+  colnames(stage_means) <- c(
+    "E9",
+    "E10",
+    "E11",
+    "E12"
+  )
+  
+  stage_means <- as.data.frame(
+    stage_means
+  ) %>%
+    tibble::rownames_to_column("gene")
+  
+  candidates <- gene_stats %>%
+    dplyr::transmute(
+      gene,
+      slope = logFC,
+      t,
+      FDR = adj.P.Val
+    ) %>%
+    dplyr::left_join(
+      stage_means,
+      by = "gene"
+    ) %>%
+    dplyr::mutate(
+      trend = dplyr::case_when(
+        slope > 0 &
+          E9 < E10 &
+          E10 < E11 &
+          E11 < E12 ~
+          "Increasing",
+        
+        slope < 0 &
+          E9 > E10 &
+          E10 > E11 &
+          E11 > E12 ~
+          "Decreasing",
+        
+        TRUE ~ "Non-monotonic"
+      ),
+      
+      excluded = grepl(
+        pattern = paste0(
+          "^(mt-|Mt-|Rpl|Rps|",
+          "Mrpl|Mrps|Hba|Hbb|Gm[0-9])"
+        ),
+        x = gene
+      ) |
+        gene %in% c("Malat1")
+    ) %>%
+    dplyr::filter(
+      FDR < 0.01,
+      abs(slope) >= 0.25,
+      trend != "Non-monotonic",
+      excluded == FALSE
+    )
+  
+  increasing_genes <- candidates %>%
+    dplyr::filter(
+      trend == "Increasing"
+    ) %>%
+    dplyr::arrange(
+      dplyr::desc(t)
+    ) %>%
+    dplyr::slice_head(
+      n = n_each
+    ) %>%
+    dplyr::pull(gene)
+  
+  decreasing_genes <- candidates %>%
+    dplyr::filter(
+      trend == "Decreasing"
+    ) %>%
+    dplyr::arrange(t) %>%
+    dplyr::slice_head(
+      n = n_each
+    ) %>%
+    dplyr::pull(gene)
+  
+  return(
+    list(
+      increasing = increasing_genes,
+      decreasing = decreasing_genes
+    )
+  )
+}
+
+
+# Source model HTML: cell 29 (zero-based extraction index).
+#========================
+# 26. 计算发育年龄评分
+#========================
+
+calculate_age_score <- function(
+  signature,
+  reference_ids,
+  target_ids
+) {
+  
+  stopifnot(length(signature$increasing)>0,length(signature$decreasing)>0)
+  selected_genes <- unique(
+    c(
+      signature$increasing,
+      signature$decreasing
+    )
+  )
+  
+  reference_expression <- logCPM_all[
+    selected_genes,
+    reference_ids,
+    drop = FALSE
+  ]
+  
+  reference_mean <- rowMeans(
+    reference_expression
+  )
+  
+  reference_sd <- apply(
+    reference_expression,
+    1,
+    sd
+  )
+  
+  valid_genes <- names(
+    reference_sd[
+      is.finite(reference_sd) &
+        reference_sd > 0
+    ]
+  )
+  
+  increasing_valid <- intersect(
+    signature$increasing,
+    valid_genes
+  )
+  
+  decreasing_valid <- intersect(
+    signature$decreasing,
+    valid_genes
+  )
+  
+  stopifnot(length(increasing_valid)>0,length(decreasing_valid)>0)
+  target_expression <- logCPM_all[
+    valid_genes,
+    target_ids,
+    drop = FALSE
+  ]
+  
+  target_z <- sweep(
+    target_expression,
+    1,
+    reference_mean[valid_genes],
+    "-"
+  )
+  
+  target_z <- sweep(
+    target_z,
+    1,
+    reference_sd[valid_genes],
+    "/"
+  )
+  
+  increasing_score <- colMeans(
+    target_z[
+      increasing_valid,
+      ,
+      drop = FALSE
+    ]
+  )
+  
+  decreasing_score <- colMeans(
+    target_z[
+      decreasing_valid,
+      ,
+      drop = FALSE
+    ]
+  )
+  
+  data.frame(
+    sample_id = target_ids,
+    age_score =
+      increasing_score -
+      decreasing_score
+  )
+}
+
+
+# Source model HTML: cell 30 (zero-based extraction index).
+#========================
+# 27. 运行嵌套3折交叉验证
+#========================
+
+cv_results_list <- list()
+
+cv_folds <- c("E1", "E2", "E3")
+
+for (current_fold in cv_folds) {
+  
+  test_ids <- vivo_cv_meta %>%
+    dplyr::filter(
+      cv_fold == current_fold
+    ) %>%
+    dplyr::pull(sample_id)
+  
+  train_ids <- vivo_cv_meta %>%
+    dplyr::filter(
+      cv_fold != current_fold
+    ) %>%
+    dplyr::pull(sample_id)
+  
+  current_signature <- select_age_signature(
+    train_ids = train_ids,
+    n_each = 250
+  )
+  
+  train_scores <- calculate_age_score(
+    signature = current_signature,
+    reference_ids = train_ids,
+    target_ids = train_ids
+  )
+  
+  test_scores <- calculate_age_score(
+    signature = current_signature,
+    reference_ids = train_ids,
+    target_ids = test_ids
+  )
+  
+  train_model_df <- train_scores %>%
+    dplyr::left_join(
+      vivo_cv_meta %>%
+        dplyr::select(
+          sample_id,
+          stage_num
+        ),
+      by = "sample_id"
+    )
+  
+  calibration_model <- lm(
+    stage_num ~ age_score,
+    data = train_model_df
+  )
+  
+  test_scores$predicted_age <- predict(
+    calibration_model,
+    newdata = test_scores
+  )
+  
+  test_scores <- test_scores %>%
+    dplyr::left_join(
+      vivo_cv_meta %>%
+        dplyr::select(
+          sample_id,
+          stage_num
+        ),
+      by = "sample_id"
+    ) %>%
+    dplyr::mutate(
+      cv_fold = current_fold,
+      n_increasing = length(
+        current_signature$increasing
+      ),
+      n_decreasing = length(
+        current_signature$decreasing
+      )
+    )
+  
+  cv_results_list[[current_fold]] <- test_scores
+}
+
+cv_predictions <- dplyr::bind_rows(
+  cv_results_list
+) %>%
+  dplyr::arrange(
+    stage_num,
+    sample_id
+  )
+
+cv_predictions
+
+
+# Source model HTML: cell 31 (zero-based extraction index).
+#========================
+# 28. 交叉验证性能
+#========================
+
+cv_predictions <- cv_predictions %>%
+  dplyr::mutate(
+    predicted_stage_class = pmax(
+      9,
+      pmin(
+        12,
+        floor(predicted_age + 0.5)
+      )
+    )
+  )
+
+cv_metrics <- data.frame(
+  MAE = mean(
+    abs(
+      cv_predictions$predicted_age -
+        cv_predictions$stage_num
+    )
+  ),
+  
+  RMSE = sqrt(
+    mean(
+      (
+        cv_predictions$predicted_age -
+          cv_predictions$stage_num
+      )^2
+    )
+  ),
+  
+  Pearson = cor(
+    cv_predictions$predicted_age,
+    cv_predictions$stage_num,
+    method = "pearson"
+  ),
+  
+  Spearman = cor(
+    cv_predictions$predicted_age,
+    cv_predictions$stage_num,
+    method = "spearman"
+  ),
+  
+  Predictive_R2 =
+    1 -
+    sum(
+      (
+        cv_predictions$predicted_age -
+          cv_predictions$stage_num
+      )^2
+    ) /
+    sum(
+      (
+        cv_predictions$stage_num -
+          mean(cv_predictions$stage_num)
+      )^2
+    ),
+  
+  Stage_accuracy = mean(
+    cv_predictions$predicted_stage_class ==
+      cv_predictions$stage_num
+  )
+)
+
+cv_metrics
+
+
+# Source model HTML: cell 33 (zero-based extraction index).
+#========================
+# 30. 使用全部Vivo样本建立最终年龄签名
+#========================
+
+all_vivo_ids <- sample_info %>%
+  dplyr::filter(
+    culture == "Vivo"
+  ) %>%
+  dplyr::pull(sample_id)
+
+final_age_signature <- select_age_signature(
+  train_ids = all_vivo_ids,
+  n_each = 250
+)
+
+cat(
+  "最终升高基因数：",
+  length(final_age_signature$increasing),
+  "\n"
+)
+
+cat(
+  "最终降低基因数：",
+  length(final_age_signature$decreasing),
+  "\n"
+)
+
+head(
+  final_age_signature$increasing,
+  20
+)
+
+head(
+  final_age_signature$decreasing,
+  20
+)
+
+
+# Source model HTML: cell 34 (zero-based extraction index).
+#========================
+# 31. 计算全部样本的发育年龄评分
+#========================
+
+all_sample_ids <- sample_info$sample_id
+
+final_age_scores <- calculate_age_score(
+  signature = final_age_signature,
+  reference_ids = all_vivo_ids,
+  target_ids = all_sample_ids
+)
+
+final_age_scores <- final_age_scores %>%
+  dplyr::left_join(
+    sample_info,
+    by = "sample_id"
+  )
+
+head(final_age_scores)
+
+
+# Source model HTML: cell 35 (zero-based extraction index).
+#========================
+# 32. 建立年龄评分与真实胚胎日龄的对应关系
+#========================
+
+final_vivo_training <- final_age_scores %>%
+  dplyr::filter(
+    culture == "Vivo"
+  )
+
+final_age_model <- lm(
+  stage_num ~ age_score,
+  data = final_vivo_training
+)
+
+summary(final_age_model)
+
+
+# Source model HTML: cell 36 (zero-based extraction index).
+#========================
+# 33. 预测Vivo、Vitro1和Vitro2的发育日龄
+#========================
+
+prediction_matrix <- predict(
+  final_age_model,
+  newdata = final_age_scores,
+  interval = "prediction",
+  level = 0.95
+)
+
+final_age_predictions <- final_age_scores %>%
+  dplyr::mutate(
+    predicted_age = prediction_matrix[, "fit"],
+    prediction_lower = prediction_matrix[, "lwr"],
+    prediction_upper = prediction_matrix[, "upr"],
+    
+    reference_status = dplyr::case_when(
+      predicted_age < 9 ~ "Below E9 reference",
+      predicted_age > 12 ~ "Above E12 reference",
+      TRUE ~ "Within E9–E12 reference"
+    )
+  ) %>%
+  dplyr::arrange(
+    factor(
+      culture,
+      levels = c(
+        "Vivo",
+        "Vitro1",
+        "Vitro2"
+      )
+    ),
+    time_num,
+    sample_id
+  )
+
+final_age_predictions_show <- final_age_predictions %>%
+  dplyr::select(
+    sample_id,
+    culture,
+    timepoint,
+    age_score,
+    predicted_age,
+    prediction_lower,
+    prediction_upper,
+    reference_status
+  ) %>%
+  tibble::as_tibble()
+
+print(
+  final_age_predictions_show,
+  n = nrow(final_age_predictions_show)
+)
+
+
+# Source model HTML: cell 37 (zero-based extraction index).
+#========================
+# 34. 汇总Vitro1和Vitro2预测结果
+#========================
+
+vitro_age_summary <- final_age_predictions %>%
+  dplyr::filter(
+    culture %in% c(
+      "Vitro1",
+      "Vitro2"
+    )
+  ) %>%
+  dplyr::group_by(
+    culture,
+    timepoint,
+    culture_day
+  ) %>%
+  dplyr::summarise(
+    n = dplyr::n(),
+    mean_predicted_age = mean(predicted_age),
+    sd_predicted_age = sd(predicted_age),
+    se_predicted_age =
+      sd_predicted_age / sqrt(n),
+    .groups = "drop"
+  ) %>%
+  dplyr::arrange(
+    culture,
+    culture_day
+  )
+
+vitro_age_summary
+
+
+# Consolidated plot uses CV data directly rather than extracting ggplot label layers.
+vivo_cv_overlay <- cv_predictions %>% transmute(sample_id,actual_age=stage_num,
+  predicted_age,culture_day=stage_num-8,vivo_stage=factor(paste0("E",stage_num),levels=paste0("E",9:12)))
+vitro_point_df <- final_age_predictions %>% filter(culture %in% c("Vitro1","Vitro2")) %>% mutate(x_plot=culture_day)
+vitro_summary_plot <- vitro_age_summary %>% transmute(culture,timepoint,culture_day,
+  mean_age=mean_predicted_age,sd_age=sd_predicted_age,x_plot=culture_day)
+# Source figure annotation uses unbounded rounded predictions for accuracy.
+# The earlier source cv_metrics uses rounding clipped to E9-E12; export both.
+#====================================================
+# 计算合并图中的Vivo交叉验证指标
+#====================================================
+
+cv_overlay_MAE <- mean(
+  abs(
+    vivo_cv_overlay$predicted_age -
+      vivo_cv_overlay$actual_age
+  )
+)
+
+cv_overlay_R2 <-
+  1 -
+  sum(
+    (
+      vivo_cv_overlay$actual_age -
+        vivo_cv_overlay$predicted_age
+    )^2
+  ) /
+  sum(
+    (
+      vivo_cv_overlay$actual_age -
+        mean(vivo_cv_overlay$actual_age)
+    )^2
+  )
+
+cv_overlay_accuracy <- mean(
+  round(vivo_cv_overlay$predicted_age) ==
+    vivo_cv_overlay$actual_age
+)
+
+cv_overlay_label <- paste0(
+  "Vivo cross-validation\n",
+  "MAE = ",
+  sprintf("%.2f", cv_overlay_MAE),
+  " days\n",
+  "R² = ",
+  sprintf("%.2f", cv_overlay_R2),
+  "\n",
+  "Accuracy = ",
+  sprintf("%.1f", cv_overlay_accuracy * 100),
+  "%"
+)
+
+cv_overlay_label
+
+
+p_d <- ggplot()+
+  annotate("segment",x=1,xend=4,y=9,yend=12,color="grey55",linetype="dashed")+
+  geom_line(data=vitro_summary_plot,aes(x_plot,mean_age,color=culture,group=culture))+
+  geom_errorbar(data=vitro_summary_plot,aes(x_plot,ymin=mean_age-sd_age,ymax=mean_age+sd_age,color=culture),width=.07)+
+  geom_point(data=vitro_summary_plot,aes(x_plot,mean_age,color=culture),shape=18,size=3)+
+  geom_point(data=vivo_cv_overlay,aes(culture_day,predicted_age,color=vivo_stage),size=2)+
+  scale_color_manual(values=c(Vitro1="#4C78A8",Vitro2="#E45756",E9="#377EB8",E10="#4DAF4A",E11="#FF7F00",E12="#E41A1C"),
+                     breaks=c("Vitro1","Vitro2"),labels=c("meo-pIVC1","meo-pIVC2"))+
+  scale_x_continuous(breaks=1:6,labels=paste("Day",1:6))+
+  scale_y_continuous(breaks=9:12,labels=paste0("E",9:12))+
+  annotate("text",x=4,y=9.1,label=cv_overlay_label,hjust=0,vjust=0,size=3)+
+  labs(x="Culture day",y="Predicted transcriptional age",color=NULL)+
+  theme_classic(base_size=12)+theme(legend.position="top")
+save_plot(p_d,"ExtendedData_Figure6d_transcriptional_age",7,5)
+write.csv(cv_predictions,file.path(out_dir,"Figure6d_CV_predictions.csv"),row.names=FALSE)
+write.csv(cv_metrics,file.path(out_dir,"Figure6d_CV_metrics_clipped_class.csv"),row.names=FALSE)
+write.csv(data.frame(MAE=cv_overlay_MAE,R2=cv_overlay_R2,Accuracy=cv_overlay_accuracy),
+          file.path(out_dir,"Figure6d_CV_metrics_figure_annotation.csv"),row.names=FALSE)
+write.csv(final_age_predictions,file.path(out_dir,"Figure6d_all_predictions.csv"),row.names=FALSE)
+write.csv(vitro_age_summary,file.path(out_dir,"Figure6d_culture_summary.csv"),row.names=FALSE)
+saveRDS(list(signature=final_age_signature,calibration=final_age_model),file.path(out_dir,"Figure6d_final_model.rds"))
+
+# Panel e: cluster-average Pearson correlation using existing RNA scale.data.
+# Do not substitute pseudobulk counts or normalized RNA data for this source matrix.
+scaled <- GetAssayData(pbmc,assay="RNA",slot="scale.data")
+stopifnot(nrow(scaled)>1,all(colnames(pbmc) %in% colnames(scaled)))
+cluster_mean <- function(cu) {
+  sapply(as.character(1:44),function(cx) {
+    ids <- colnames(pbmc)[pbmc$sample2==cu & pbmc$CX1_plot==cx]
+    if(!length(ids)) stop("No cells for ",cu," cluster ",cx,"; cannot recreate a full 44x44 matrix.")
+    Matrix::rowMeans(scaled[,ids,drop=FALSE])
+  })
+}
+y_vivo <- cluster_mean("Vivo")
+y_v1 <- cluster_mean("Vitro1")
+y_v2 <- cluster_mean("Vitro2")
+heat_cols <- colorRampPalette(c("#2C7BB6","#ABD9E9","#FFFFBF","#FDAE61","#D7191C"))(200)
+for(cu in c("Vitro1","Vitro2")) {
+  r <- cor(y_vivo,if(cu=="Vitro1") y_v1 else y_v2,method="pearson")
+  if(any(!is.finite(r))) stop("Non-finite cluster correlations: ",cu)
+  # Source cor() rows are Vivo and columns are Vitro; source corrplot has diag=TRUE.
+  grDevices::pdf(file.path(out_dir,paste0("ExtendedData_Figure6e_Vivo_vs_",cu,".pdf")),10,10)
+  corrplot::corrplot(r,method="circle",type="full",is.corr=TRUE,col=heat_cols,
+    tl.col="black",tl.cex=.7,tl.srt=45,cl.cex=.8,diag=TRUE)
+  grDevices::dev.off()
+  write.csv(r,file.path(out_dir,paste0("Figure6e_Vivo_vs_",cu,"_matrix.csv")))
+}
+writeLines(rownames(scaled),file.path(out_dir,"Figure6e_scale_data_genes.txt"))
+
+# Shared f/h calculation from Figure3H: expression fraction and scaled mean.
+# RNA data must contain log1p-normalized expression; pooled cells are used.
+marker_dot <- function(obj,subtype_col,subtype_levels,genes,prefix) {
+  obj <- prepare_meta(obj); DefaultAssay(obj) <- "RNA"
+  stopifnot(subtype_col %in% names(obj[[]]),!anyNA(obj[[]][[subtype_col]]),
+            all(as.character(obj[[]][[subtype_col]]) %in% subtype_levels))
+  found <- intersect(genes,rownames(obj)); missing <- setdiff(genes,rownames(obj))
+  writeLines(missing,file.path(out_dir,paste0(prefix,"_missing_markers.txt")))
+  if(length(missing)) warning(prefix,": missing markers: ",paste(missing,collapse=", "))
+  if(!length(found)) stop("No marker genes matched: ",prefix)
+  df <- FetchData(obj,vars=c("sample2",subtype_col,found),slot="data")
+  names(df)[names(df)==subtype_col] <- "Subtype"
+  z <- df %>% pivot_longer(cols=all_of(found),names_to="Gene",values_to="expr") %>%
+    group_by(sample2,Subtype,Gene) %>% summarise(pct.exp=mean(expr>0)*100,
+      avg.exp=mean(expm1(expr)),.groups="drop") %>%
+    group_by(Gene) %>% mutate(avg.scaled=as.numeric(scale(log1p(avg.exp)))) %>% ungroup()
+  z$avg.scaled[!is.finite(z$avg.scaled)] <- 0
+  z$avg.scaled <- pmax(pmin(z$avg.scaled,1.5),-1.5)
+  z$Gene <- factor(z$Gene,levels=found)
+  z$Subtype <- factor(z$Subtype,levels=rev(subtype_levels))
+  p <- ggplot(z,aes(Gene,Subtype,size=pct.exp,color=avg.scaled))+geom_point()+
+    facet_grid(sample2~.,labeller=labeller(sample2=culture_labels))+
+    scale_color_gradient2(low="#2C7FB8",mid="white",high="#D73027",limits=c(-1.5,1.5),name="Scaled expression")+
+    scale_size_continuous(range=c(0,5),limits=c(0,100),breaks=c(0,25,50,75,100),name="Percent expressed")+
+    labs(x=NULL,y=NULL)+theme_bw(base_size=10)+
+    theme(axis.text.x=element_text(angle=60,hjust=1,face="italic"),panel.grid=element_blank())
+  save_plot(p,prefix,12,8)
+  write.csv(z,file.path(out_dir,paste0(prefix,"_data.csv")),row.names=FALSE)
+  p
+}
+# Shared g/i: denominator is all cells in the corresponding subtype object.
+composition <- function(obj,col,levels_sub,cols,prefix) {
+  obj <- prepare_meta(obj)
+  meta <- obj[[]]
+  stopifnot(col %in% names(meta),!anyNA(meta[[col]]),all(as.character(meta[[col]]) %in% levels_sub))
+  meta$Subtype <- factor(meta[[col]],levels=levels_sub)
+  z <- meta %>% count(sample2,sample1,Subtype,name="n",.drop=TRUE) %>%
+    group_by(sample2,sample1) %>% mutate(total=sum(n),prop=n/total) %>% ungroup()
+  p <- ggplot(z,aes(sample1,prop,fill=Subtype))+geom_col(width=.82,color="grey25",linewidth=.25)+
+    facet_grid(.~sample2,scales="free_x",space="free_x",labeller=labeller(sample2=culture_labels))+
+    scale_x_discrete(labels=stage_labels)+scale_y_continuous(labels=scales::percent_format(),breaks=seq(0,1,.25),expand=expansion(mult=c(0,.02)))+
+    scale_fill_manual(values=cols,breaks=levels_sub,drop=FALSE)+
+    labs(x=NULL,y="Cell proportion",fill=NULL)+theme_classic(base_size=11)+
+    theme(axis.text.x=element_text(angle=60,hjust=1),strip.background=element_blank())
+  save_plot(p,prefix,11,4)
+  write.csv(z,file.path(out_dir,paste0(prefix,"_data.csv")),row.names=FALSE)
+  p
+}
+
+# Panels f/g: ensure the manuscript placode numbering explicitly.
+stopifnot(file.exists(placode_rds))
+placode <- readRDS(placode_rds)
+p_levels <- paste0("P",1:6)
+p_target <- c("P1 Olfactory placodes","P2 Adenohypophyseal placodes","P3 Lens placodes",
+              "P4 Trigeminal placodes","P5 Otic placodes","P6 Epibranchial placodes")
+p_map <- c("P6 Olfactory placodes"="P1 Olfactory placodes",
+  "P2 Adenohypophyseal placodes"="P2 Adenohypophyseal placodes",
+  "P1 Lens placodes"="P3 Lens placodes","P5 Trigeminal placodes"="P4 Trigeminal placodes",
+  "P4 Otic placodes"="P5 Otic placodes","P3 Epibranchial placodes"="P6 Epibranchial placodes")
+stopifnot("P_Type" %in% names(placode[[]]))
+p_type <- as.character(placode$P_Type)
+# P_Type is authoritative. Reject mixed old/new type sets instead of guessing.
+if(setequal(unique(p_type),p_target)) {
+  p_new <- p_type
+} else if(setequal(unique(p_type),names(p_map))) {
+  p_new <- unname(p_map[p_type])
+} else stop("P_Type does not match a complete documented old/new set; verify labels manually.")
+placode$P_Type_plot <- factor(p_new,levels=p_target)
+placode$P_plot <- factor(sub(" .*","",p_new),levels=p_levels)
+write.csv(as.data.frame(table(placode$P_plot,placode$P_Type_plot)),
+          file.path(out_dir,"Figure6f_g_placode_label_check.csv"),row.names=FALSE)
+p_cols <- c(P1="#E41A1C",P2="#377EB8",P3="#4DAF4A",P4="#984EA3",P5="#FF7F00",P6="#00A6D6")
+p_genes <- c("Sox2","Otx2","Six1","Eya2","Foxg1","Lhx3","Pitx1","Pitx2","Hesx1",
+  "Six6","Six3","Foxe3","Pax6","Neurog1","Neurog2","Foxe1","Pax2","Pax8",
+  "Foxi3","Lmx1a","Eya1","Gata3","Sox10","Phox2a","Phox2b","Foxi2","Pax1","Prrx2")
+p_f <- marker_dot(placode,"P_plot",p_levels,p_genes,"ExtendedData_Figure6f_placode_markers")
+p_g <- composition(placode,"P_plot",p_levels,p_cols,"ExtendedData_Figure6g_placode_proportions")
+
+# Panels h/i: original X1-X8 merge and manuscript X1-X7 numbering.
+stopifnot(file.exists(gut_rds))
+gut <- readRDS(gut_rds)
+stopifnot(all(c("X","X_Type") %in% names(gut[[]])))
+x_levels <- paste0("X",1:7)
+x_map <- c(X1="X1",X2="X2",X3="X3",X4="X1",X5="X4",X6="X5",X7="X6",X8="X7")
+x_target <- c(X1="X1 Gut",X2="X2 Stomach/foregut",X3="X3 Lung",X4="X4 Pancreatic",
+              X5="X5 Hepatoblasts",X6="X6 Thyroid epithelium",X7="X7 Renal epithelium")
+x_old <- as.character(gut$X)
+if(setequal(unique(x_old),names(x_map))) {
+  x_new <- unname(x_map[x_old])
+} else if(setequal(unique(x_old),x_levels)) {
+  # Only accept already-merged labels if their full type mapping agrees.
+  stopifnot(identical(as.character(gut$X_Type),unname(x_target[x_old])))
+  x_new <- x_old
+} else stop("X labels do not match the documented old or merged subtype sets.")
+gut$X_plot <- factor(x_new,levels=x_levels)
+gut$X_Type_plot <- factor(unname(x_target[x_new]),levels=unname(x_target))
+x_genes <- c("Foxa1","Foxa2","Gata6","Apela","Sox17","Epcam","Shh","Cdx2","Sox2","Nkx2-1",
+  "Pdx1","Ptf1a","Nkx6-1","Prox1","Afp","Alb","Hnf4a","Ttr","Apoa1","Hhex","Dlk1",
+  "Foxe1","Pax8","Pax2","Hnf1b","Lhx1","Sim1","Gata3","Wt1","Ret","Wnt11")
+x_cols <- c(X1="#BD84B0",X2="#456722",X3="#FACB12",X4="#005579",X5="#FBBE92",X6="#532C5A",X7="#D5E839")
+p_h <- marker_dot(gut,"X_plot",x_levels,x_genes,"ExtendedData_Figure6h_endoderm_markers")
+p_i <- composition(gut,"X_plot",x_levels,x_cols,"ExtendedData_Figure6i_endoderm_proportions")
+writeLines(capture.output(sessionInfo()),file.path(out_dir,"sessionInfo.txt"))
+# Assemble panel a and exported plots in the manuscript layout separately.
