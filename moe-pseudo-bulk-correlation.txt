@@ -1,0 +1,1031 @@
+# ============================================================
+# Strict pseudo-bulk correlation analysis
+# meo-pIVC2 (D1-D6) / meo-pIVC1 (RD1-RD4) vs in vivo E9-E12
+#
+# Input:
+#   moe-E9-D6-RD4-373319.rds
+#
+# Method:
+#   1. Explicitly define all 42 biological replicates
+#   2. Strictly verify replicate names and cell numbers
+#   3. Sum raw UMI counts within EACH biological replicate
+#   4. edgeR filterByExpr
+#   5. TMM normalization
+#   6. log2-CPM transformation
+#   7. Average 3 biological replicates within each stage/day
+#   8. Pearson correlation across retained genes
+#   9. Plot D1-D6 / RD1-RD4 versus E9-E12
+#
+# NOTE:
+# The code assumes the replicate IDs (E9E1, E9E2, ..., D6E3)
+# are stored in pbmc@meta.data$orig.ident.
+# If they are stored in another metadata column, ONLY change:
+#     replicate_col <- "orig.ident"
+# ============================================================
+
+
+# ============================================================
+# 0. Load packages
+# ============================================================
+
+library(Seurat)
+library(Matrix)
+library(edgeR)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(patchwork)
+library(scales)
+
+
+# ============================================================
+# 1. Read Seurat object
+# ============================================================
+
+pbmc <- readRDS("moe-E9-D6-RD4-373319.rds")
+
+DefaultAssay(pbmc) <- "RNA"
+
+# Stage/day metadata
+Idents(pbmc) <- "sample1"
+
+cat("Seurat object:\n")
+print(pbmc)
+
+cat("\nCell numbers by sample1:\n")
+print(table(pbmc$sample1))
+
+cat("\nMetadata columns:\n")
+print(names(pbmc@meta.data))
+
+
+# ============================================================
+# 2. Explicitly specify the biological-replicate metadata column
+# ============================================================
+
+replicate_col <- "orig.ident"
+
+if (!replicate_col %in% colnames(pbmc@meta.data)) {
+  stop(
+    paste0(
+      "Metadata column '", replicate_col, "' was not found.\n",
+      "Please change replicate_col to the column containing ",
+      "E9E1, E9E2, ..., D6E3."
+    )
+  )
+}
+
+
+# ============================================================
+# 3. Explicitly define ALL 42 biological replicates
+# ============================================================
+
+expected_replicates <- c(
+  "E9E1",  "E9E2",  "E9E3",
+  "E10E1", "E10E2", "E10E3",
+  "E11E1", "E11E2", "E11E3",
+  "E12E1", "E12E2", "E12E3",
+
+  "RD1E1", "RD1E2", "RD1E3",
+  "RD2E1", "RD2E2", "RD2E3",
+  "RD3E1", "RD3E2", "RD3E3",
+  "RD4E1n", "RD4E2", "RD4E3n",
+
+  "D1E1n", "D1E2n", "D1E3",
+  "D2E1",  "D2E2",  "D2E3",
+  "D3E1",  "D3E2",  "D3E3",
+  "D4E1",  "D4E2",  "D4E3",
+  "D5E1",  "D5E2",  "D5E3",
+  "D6E1",  "D6E2",  "D6E3"
+)
+
+if (length(expected_replicates) != 42) {
+  stop("Internal check failed: expected_replicates must contain exactly 42 samples.")
+}
+
+
+# ============================================================
+# 4. Explicitly define expected cell numbers
+# ============================================================
+# These values come from the current Seurat object summary
+# provided for the 42 biological replicates.
+# Total = 373,319 cells.
+
+expected_ncells <- c(
+  E9E1   = 10411,
+  E9E2   = 11086,
+  E9E3   = 10544,
+
+  E10E1  = 8166,
+  E10E2  = 8895,
+  E10E3  = 8560,
+
+  E11E1  = 8752,
+  E11E2  = 7059,
+  E11E3  = 9235,
+
+  E12E1  = 10691,
+  E12E2  = 8455,
+  E12E3  = 7334,
+
+  RD1E1  = 7048,
+  RD1E2  = 8470,
+  RD1E3  = 7533,
+
+  RD2E1  = 8180,
+  RD2E2  = 7667,
+  RD2E3  = 8457,
+
+  RD3E1  = 9697,
+  RD3E2  = 9665,
+  RD3E3  = 7540,
+
+  RD4E1n = 12008,
+  RD4E2  = 9199,
+  RD4E3n = 5789,
+
+  D1E1n  = 11850,
+  D1E2n  = 8758,
+  D1E3   = 9508,
+
+  D2E1   = 7417,
+  D2E2   = 8274,
+  D2E3   = 7232,
+
+  D3E1   = 8390,
+  D3E2   = 9661,
+  D3E3   = 8219,
+
+  D4E1   = 7729,
+  D4E2   = 7733,
+  D4E3   = 10466,
+
+  D5E1   = 11433,
+  D5E2   = 9310,
+  D5E3   = 10327,
+
+  D6E1   = 8125,
+  D6E2   = 9698,
+  D6E3   = 8748
+)
+
+expected_ncells <- expected_ncells[expected_replicates]
+
+cat("\nExpected total cell number: ",
+    sum(expected_ncells), "\n", sep = "")
+
+
+# ============================================================
+# 5. Explicit biological replicate -> stage/day mapping
+# ============================================================
+# No automatic regular-expression inference is used here.
+
+replicate_to_stage <- c(
+  E9E1   = "E9",
+  E9E2   = "E9",
+  E9E3   = "E9",
+
+  E10E1  = "E10",
+  E10E2  = "E10",
+  E10E3  = "E10",
+
+  E11E1  = "E11",
+  E11E2  = "E11",
+  E11E3  = "E11",
+
+  E12E1  = "E12",
+  E12E2  = "E12",
+  E12E3  = "E12",
+
+  RD1E1  = "RD1",
+  RD1E2  = "RD1",
+  RD1E3  = "RD1",
+
+  RD2E1  = "RD2",
+  RD2E2  = "RD2",
+  RD2E3  = "RD2",
+
+  RD3E1  = "RD3",
+  RD3E2  = "RD3",
+  RD3E3  = "RD3",
+
+  RD4E1n = "RD4",
+  RD4E2  = "RD4",
+  RD4E3n = "RD4",
+
+  D1E1n  = "D1",
+  D1E2n  = "D1",
+  D1E3   = "D1",
+
+  D2E1   = "D2",
+  D2E2   = "D2",
+  D2E3   = "D2",
+
+  D3E1   = "D3",
+  D3E2   = "D3",
+  D3E3   = "D3",
+
+  D4E1   = "D4",
+  D4E2   = "D4",
+  D4E3   = "D4",
+
+  D5E1   = "D5",
+  D5E2   = "D5",
+  D5E3   = "D5",
+
+  D6E1   = "D6",
+  D6E2   = "D6",
+  D6E3   = "D6"
+)
+
+stage_order <- c(
+  "E9", "E10", "E11", "E12",
+  "RD1", "RD2", "RD3", "RD4",
+  "D1", "D2", "D3", "D4", "D5", "D6"
+)
+
+
+# ============================================================
+# 6. Strict metadata checks
+# ============================================================
+
+meta <- pbmc@meta.data
+
+# Seurat metadata row names must match Seurat cell barcodes
+if (!identical(rownames(meta), colnames(pbmc))) {
+  stop(
+    "rownames(pbmc@meta.data) are not identical to colnames(pbmc). ",
+    "Do not continue until the metadata/cell order is resolved."
+  )
+}
+
+replicate_id <- as.character(meta[[replicate_col]])
+names(replicate_id) <- rownames(meta)
+
+if (any(is.na(replicate_id))) {
+  stop("NA values were found in the biological-replicate metadata column.")
+}
+
+observed_replicates <- unique(replicate_id)
+
+missing_replicates <- setdiff(
+  expected_replicates,
+  observed_replicates
+)
+
+unexpected_replicates <- setdiff(
+  observed_replicates,
+  expected_replicates
+)
+
+if (length(missing_replicates) > 0) {
+  stop(
+    paste(
+      "Missing expected biological replicates:",
+      paste(missing_replicates, collapse = ", ")
+    )
+  )
+}
+
+if (length(unexpected_replicates) > 0) {
+  stop(
+    paste(
+      "Unexpected biological replicate names were found:",
+      paste(unexpected_replicates, collapse = ", ")
+    )
+  )
+}
+
+
+# ============================================================
+# 7. Strictly verify cell number for every biological replicate
+# ============================================================
+
+actual_ncells_table <- table(
+  factor(
+    replicate_id,
+    levels = expected_replicates
+  )
+)
+
+actual_ncells <- as.integer(actual_ncells_table)
+names(actual_ncells) <- expected_replicates
+
+sample_qc <- data.frame(
+  replicate = expected_replicates,
+  stage = unname(replicate_to_stage[expected_replicates]),
+  expected_cells = as.integer(expected_ncells),
+  actual_cells = as.integer(actual_ncells),
+  difference = as.integer(actual_ncells - expected_ncells),
+  stringsAsFactors = FALSE
+)
+
+cat("\nStrict biological-replicate cell-count check:\n")
+print(sample_qc)
+
+write.csv(
+  sample_qc,
+  "pseudo_bulk_sample_cell_count_QC.csv",
+  row.names = FALSE,
+  quote = FALSE
+)
+
+if (any(sample_qc$difference != 0)) {
+  stop(
+    paste0(
+      "Cell-number QC failed. ",
+      "At least one biological replicate does not match the expected cell number. ",
+      "See pseudo_bulk_sample_cell_count_QC.csv."
+    )
+  )
+}
+
+if (sum(actual_ncells) != 373319) {
+  stop(
+    paste0(
+      "Total cell count is ", sum(actual_ncells),
+      ", but 373319 was expected."
+    )
+  )
+}
+
+cat("\nCell-number QC PASSED.\n")
+cat("All 42 biological replicates exactly match the expected counts.\n")
+cat("Total cells = ", sum(actual_ncells), "\n", sep = "")
+
+
+# ============================================================
+# 8. Strictly verify sample1 stage/day labels
+# ============================================================
+
+if (!"sample1" %in% colnames(meta)) {
+  stop("Metadata column 'sample1' was not found.")
+}
+
+expected_stage_per_cell <- unname(
+  replicate_to_stage[replicate_id]
+)
+
+observed_stage_per_cell <- as.character(
+  meta$sample1
+)
+
+stage_mismatch <- which(
+  observed_stage_per_cell != expected_stage_per_cell
+)
+
+if (length(stage_mismatch) > 0) {
+
+  mismatch_examples <- data.frame(
+    cell = rownames(meta)[stage_mismatch],
+    replicate = replicate_id[stage_mismatch],
+    expected_stage = expected_stage_per_cell[stage_mismatch],
+    sample1 = observed_stage_per_cell[stage_mismatch]
+  )
+
+  write.csv(
+    mismatch_examples,
+    "sample1_stage_mismatch.csv",
+    row.names = FALSE,
+    quote = FALSE
+  )
+
+  stop(
+    paste0(
+      "sample1 QC failed: ",
+      length(stage_mismatch),
+      " cells have inconsistent stage/day labels. ",
+      "See sample1_stage_mismatch.csv."
+    )
+  )
+}
+
+cat("\nsample1 stage/day QC PASSED.\n")
+
+
+# ============================================================
+# 9. Extract RAW RNA UMI counts
+# ============================================================
+
+counts <- GetAssayData(
+  pbmc,
+  assay = "RNA",
+  slot = "counts"
+)
+
+if (!identical(colnames(counts), rownames(meta))) {
+  stop(
+    "The order of cells in the RNA count matrix does not match metadata."
+  )
+}
+
+cat("\nRaw RNA count matrix:\n")
+print(dim(counts))
+
+
+# ============================================================
+# 10. Construct pseudo-bulk counts for EACH biological replicate
+# ============================================================
+# Raw UMI counts from all cells belonging to the same biological
+# replicate are summed. This gives a genes x 42 samples matrix.
+
+cell_replicate <- factor(
+  replicate_id,
+  levels = expected_replicates
+)
+
+design_pb <- Matrix::sparse.model.matrix(
+  ~ 0 + cell_replicate
+)
+
+colnames(design_pb) <- expected_replicates
+
+pseudo_counts <- counts %*% design_pb
+
+rownames(pseudo_counts) <- rownames(counts)
+colnames(pseudo_counts) <- expected_replicates
+
+if (!identical(
+  colnames(pseudo_counts),
+  expected_replicates
+)) {
+  stop("Pseudo-bulk sample order is incorrect.")
+}
+
+cat("\nPseudo-bulk raw count matrix:\n")
+print(dim(pseudo_counts))
+
+cat("\nPseudo-bulk library sizes:\n")
+print(colSums(pseudo_counts))
+
+
+# ============================================================
+# 11. Define stage/day for each of the 42 pseudo-bulk samples
+# ============================================================
+
+rep_stage <- factor(
+  unname(
+    replicate_to_stage[
+      colnames(pseudo_counts)
+    ]
+  ),
+  levels = stage_order
+)
+
+replicate_annotation <- data.frame(
+  replicate = colnames(pseudo_counts),
+  stage = as.character(rep_stage),
+  cells = actual_ncells[colnames(pseudo_counts)],
+  library_size = as.numeric(colSums(pseudo_counts)),
+  stringsAsFactors = FALSE
+)
+
+write.csv(
+  replicate_annotation,
+  "pseudo_bulk_replicate_annotation.csv",
+  row.names = FALSE,
+  quote = FALSE
+)
+
+cat("\nPseudo-bulk replicate annotation:\n")
+print(replicate_annotation)
+
+
+# ============================================================
+# 12. edgeR expression filtering
+# ============================================================
+# Genes with insufficient expression across biological replicates
+# are removed before correlation analysis.
+
+y <- edgeR::DGEList(
+  counts = pseudo_counts,
+  group = rep_stage
+)
+
+keep <- edgeR::filterByExpr(
+  y,
+  group = rep_stage
+)
+
+cat("\nGenes before filterByExpr: ",
+    nrow(y), "\n", sep = "")
+
+cat("Genes retained after filterByExpr: ",
+    sum(keep), "\n", sep = "")
+
+cat("Genes removed by filterByExpr: ",
+    sum(!keep), "\n", sep = "")
+
+y <- y[
+  keep,
+  ,
+  keep.lib.sizes = FALSE
+]
+
+
+# ============================================================
+# 13. TMM normalization
+# ============================================================
+
+y <- edgeR::calcNormFactors(
+  y,
+  method = "TMM"
+)
+
+cat("\nedgeR library sizes and TMM normalization factors:\n")
+print(y$samples)
+
+write.csv(
+  y$samples,
+  "pseudo_bulk_TMM_normalization_factors.csv",
+  quote = FALSE
+)
+
+
+# ============================================================
+# 14. Calculate replicate-level log2-CPM
+# ============================================================
+
+logcpm_rep <- edgeR::cpm(
+  y,
+  log = TRUE,
+  prior.count = 1
+)
+
+if (any(!is.finite(logcpm_rep))) {
+  stop("Non-finite values were found in replicate-level logCPM.")
+}
+
+cat("\nReplicate-level logCPM matrix:\n")
+print(dim(logcpm_rep))
+
+
+# ============================================================
+# 15. Average the 3 biological replicates within each stage/day
+# ============================================================
+# IMPORTANT:
+# The mean is calculated AFTER:
+#   replicate-level pseudo-bulk
+#   expression filtering
+#   TMM normalization
+#   logCPM transformation
+
+stage_mean_logcpm <- matrix(
+  NA_real_,
+  nrow = nrow(logcpm_rep),
+  ncol = length(stage_order),
+  dimnames = list(
+    rownames(logcpm_rep),
+    stage_order
+  )
+)
+
+for (st in stage_order) {
+
+  replicate_names_for_stage <- names(
+    replicate_to_stage
+  )[
+    replicate_to_stage == st
+  ]
+
+  if (length(replicate_names_for_stage) != 3) {
+    stop(
+      paste0(
+        "Stage ", st,
+        " does not have exactly 3 explicitly defined biological replicates."
+      )
+    )
+  }
+
+  if (!all(
+    replicate_names_for_stage %in%
+      colnames(logcpm_rep)
+  )) {
+    stop(
+      paste0(
+        "Not all biological replicates for ", st,
+        " are present in logCPM matrix."
+      )
+    )
+  }
+
+  stage_mean_logcpm[, st] <- rowMeans(
+    logcpm_rep[
+      ,
+      replicate_names_for_stage,
+      drop = FALSE
+    ]
+  )
+}
+
+if (any(!is.finite(stage_mean_logcpm))) {
+  stop("Non-finite values were found in stage-level mean logCPM.")
+}
+
+cat("\nStage/day mean logCPM matrix:\n")
+print(dim(stage_mean_logcpm))
+
+
+# ============================================================
+# 16. Pearson correlation
+# ============================================================
+# Correlation is calculated across all genes retained by
+# filterByExpr.
+
+cor_mat <- cor(
+  stage_mean_logcpm,
+  method = "pearson",
+  use = "everything"
+)
+
+cat("\nFull Pearson correlation matrix:\n")
+print(round(cor_mat, 3))
+
+
+# ============================================================
+# 17. Extract figure matrices
+# ============================================================
+
+in_vivo_stages <- c(
+  "E9", "E10", "E11", "E12"
+)
+
+meo_pIVC2_days <- c(
+  "D1", "D2", "D3", "D4", "D5", "D6"
+)
+
+meo_pIVC1_days <- c(
+  "RD1", "RD2", "RD3", "RD4"
+)
+
+cor_D <- cor_mat[
+  meo_pIVC2_days,
+  in_vivo_stages,
+  drop = FALSE
+]
+
+cor_RD <- cor_mat[
+  meo_pIVC1_days,
+  in_vivo_stages,
+  drop = FALSE
+]
+
+cat("\nmeo-pIVC2: D1-D6 vs E9-E12\n")
+print(round(cor_D, 2))
+
+cat("\nmeo-pIVC1: RD1-RD4 vs E9-E12\n")
+print(round(cor_RD, 2))
+
+
+# ============================================================
+# 18. Export numerical matrices
+# ============================================================
+
+write.csv(
+  as.matrix(pseudo_counts),
+  "pseudo_bulk_raw_counts_42_replicates.csv",
+  quote = FALSE
+)
+
+write.csv(
+  logcpm_rep,
+  "pseudo_bulk_TMM_logCPM_42_replicates.csv",
+  quote = FALSE
+)
+
+write.csv(
+  stage_mean_logcpm,
+  "pseudo_bulk_TMM_logCPM_stage_mean.csv",
+  quote = FALSE
+)
+
+write.csv(
+  cor_mat,
+  "pseudo_bulk_full_Pearson_correlation.csv",
+  quote = FALSE
+)
+
+write.csv(
+  cor_D,
+  "meo_pIVC2_D1-D6_vs_E9-E12_Pearson.csv",
+  quote = FALSE
+)
+
+write.csv(
+  cor_RD,
+  "meo_pIVC1_RD1-RD4_vs_E9-E12_Pearson.csv",
+  quote = FALSE
+)
+
+write.table(
+  rownames(stage_mean_logcpm),
+  "genes_used_for_Pearson_correlation.txt",
+  quote = FALSE,
+  row.names = FALSE,
+  col.names = FALSE
+)
+
+
+# ============================================================
+# 19. Prepare plotting data
+# ============================================================
+
+D_df <- as.data.frame(
+  cor_D,
+  check.names = FALSE
+) %>%
+  mutate(
+    CultureDay = rownames(.)
+  ) %>%
+  pivot_longer(
+    cols = all_of(in_vivo_stages),
+    names_to = "Stage",
+    values_to = "Correlation"
+  )
+
+RD_df <- as.data.frame(
+  cor_RD,
+  check.names = FALSE
+) %>%
+  mutate(
+    CultureDay = rownames(.)
+  ) %>%
+  pivot_longer(
+    cols = all_of(in_vivo_stages),
+    names_to = "Stage",
+    values_to = "Correlation"
+  )
+
+D_day_labels <- c(
+  D1 = "Day 1",
+  D2 = "Day 2",
+  D3 = "Day 3",
+  D4 = "Day 4",
+  D5 = "Day 5",
+  D6 = "Day 6"
+)
+
+RD_day_labels <- c(
+  RD1 = "Day 1",
+  RD2 = "Day 2",
+  RD3 = "Day 3",
+  RD4 = "Day 4"
+)
+
+D_df$Day <- unname(
+  D_day_labels[
+    D_df$CultureDay
+  ]
+)
+
+RD_df$Day <- unname(
+  RD_day_labels[
+    RD_df$CultureDay
+  ]
+)
+
+D_df$Day <- factor(
+  D_df$Day,
+  levels = rev(
+    paste0("Day ", 1:6)
+  )
+)
+
+RD_df$Day <- factor(
+  RD_df$Day,
+  levels = rev(
+    paste0("Day ", 1:4)
+  )
+)
+
+D_df$Stage <- factor(
+  D_df$Stage,
+  levels = in_vivo_stages
+)
+
+RD_df$Stage <- factor(
+  RD_df$Stage,
+  levels = in_vivo_stages
+)
+
+
+# ============================================================
+# 20. Common correlation color scale
+# ============================================================
+
+cor_scale <- scale_fill_gradientn(
+  colours = c(
+    "#2C7BB6",
+    "#ABD9E9",
+    "#FFFFBF",
+    "#FDAE61",
+    "#D7191C"
+  ),
+  limits = c(0.4, 1.0),
+  breaks = c(
+    0.4, 0.6, 0.8, 1.0
+  ),
+  oob = scales::squish,
+  name = "Correlation"
+)
+
+
+# ============================================================
+# 21. meo-pIVC2 heatmap
+# ============================================================
+
+p_D <- ggplot(
+  D_df,
+  aes(
+    x = Stage,
+    y = Day,
+    fill = Correlation
+  )
+) +
+  geom_tile(
+    color = "grey70",
+    linewidth = 0.45
+  ) +
+  geom_text(
+    aes(
+      label = sprintf(
+        "%.2f",
+        Correlation
+      )
+    ),
+    size = 4.2,
+    color = "black"
+  ) +
+  cor_scale +
+  coord_fixed() +
+  labs(
+    x = NULL,
+    y = "meo-pIVC2"
+  ) +
+  theme_classic(
+    base_size = 12
+  ) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+
+    axis.text.y = element_text(
+      size = 11,
+      color = "black"
+    ),
+
+    axis.ticks.y = element_blank(),
+
+    axis.title.y = element_text(
+      size = 12,
+      color = "black",
+      angle = 90,
+      margin = margin(r = 5)
+    ),
+
+    axis.line = element_blank(),
+
+    legend.title = element_text(
+      size = 10,
+      color = "black"
+    ),
+
+    legend.text = element_text(
+      size = 9,
+      color = "black"
+    ),
+
+    plot.margin = margin(
+      2, 2, 0, 2
+    )
+  )
+
+
+# ============================================================
+# 22. meo-pIVC1 heatmap
+# ============================================================
+
+p_RD <- ggplot(
+  RD_df,
+  aes(
+    x = Stage,
+    y = Day,
+    fill = Correlation
+  )
+) +
+  geom_tile(
+    color = "grey70",
+    linewidth = 0.45
+  ) +
+  geom_text(
+    aes(
+      label = sprintf(
+        "%.2f",
+        Correlation
+      )
+    ),
+    size = 4.2,
+    color = "black"
+  ) +
+  cor_scale +
+  coord_fixed() +
+  labs(
+    x = NULL,
+    y = "meo-pIVC1"
+  ) +
+  theme_classic(
+    base_size = 12
+  ) +
+  theme(
+    axis.text.x = element_text(
+      size = 11,
+      color = "black",
+      margin = margin(t = 2)
+    ),
+
+    axis.text.y = element_text(
+      size = 11,
+      color = "black"
+    ),
+
+    axis.ticks = element_blank(),
+
+    axis.title.y = element_text(
+      size = 12,
+      color = "black",
+      angle = 90,
+      margin = margin(r = 5)
+    ),
+
+    axis.line = element_blank(),
+
+    legend.position = "none",
+
+    plot.margin = margin(
+      0, 2, 2, 2
+    )
+  )
+
+
+# ============================================================
+# 23. Combine heatmaps
+# ============================================================
+
+p_final <- p_D / p_RD +
+  patchwork::plot_layout(
+    heights = c(6, 4)
+  )
+
+p_final
+
+
+# ============================================================
+# 24. Save figure
+# ============================================================
+
+ggsave(
+  filename = "pseudo_bulk_Pearson_correlation_heatmap.pdf",
+  plot = p_final,
+  width = 4.6,
+  height = 6.0,
+  units = "in"
+)
+
+ggsave(
+  filename = "pseudo_bulk_Pearson_correlation_heatmap.png",
+  plot = p_final,
+  width = 4.6,
+  height = 6.0,
+  units = "in",
+  dpi = 600
+)
+
+
+# ============================================================
+# 25. Save session information
+# ============================================================
+
+writeLines(
+  capture.output(
+    sessionInfo()
+  ),
+  "pseudo_bulk_Pearson_sessionInfo.txt"
+)
+
+
+# ============================================================
+# 26. Final summary
+# ============================================================
+
+cat("\n============================================\n")
+cat("STRICT pseudo-bulk correlation completed.\n")
+cat("============================================\n")
+cat("42 biological replicates: PASSED\n")
+cat("Total cells: 373319\n")
+cat("Replicate cell counts: PASSED\n")
+cat("sample1 mapping: PASSED\n")
+cat("Normalization: edgeR TMM\n")
+cat("Expression scale: log2-CPM\n")
+cat("Replicates per stage/day: 3\n")
+cat("Correlation: Pearson\n")
+cat("============================================\n")
