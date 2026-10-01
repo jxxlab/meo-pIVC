@@ -1,0 +1,277 @@
+#!/usr/bin/env bash
+# Bulk RNA-seq preprocessing demo: paired-end FASTQ -> gene fragment counts
+# Reference: mouse GRCm38, Ensembl release 89
+# Alignment: STAR 2.7.11b; quantification: Subread featureCounts 2.1.1
+# fastp, samtools and Python >=3.9 are also required; versions are recorded below.
+# This is a corrected demo, not a record of parameters actually used previously.
+# No FASTQ data or reference sequences are distributed with this script.
+#
+# USAGE
+# 1. Save/rename this file as bulk_RNAseq_pipeline_demo.sh.
+# 2. Edit the paths and explicit sample list below.
+# 3. Confirm library strandedness with the sequencing provider/protocol:
+#       0 = unstranded; 1 = stranded; 2 = reversely stranded.
+#    Do not choose a value just because it is the software default.
+# 4. Confirm original read length. READ_LENGTH=150 is an example for PE150.
+# 5. Use a NEW output directory. Run, for example, only for a confirmed
+#    unstranded PE150 library:
+#       STRAND=0 READ_LENGTH=150 bash bulk_RNAseq_pipeline_demo.sh
+#
+# SCOPE
+# This script ends at raw gene counts and processing QC. It does not perform
+# normalization, PCA, differential expression or enrichment analysis.
+# Memory requirements depend on STAR index and BAM sorting; confirm resources
+# before running. Samples are processed sequentially, not simultaneously.
+#
+# CHANGES FROM THE SUPPLIED COMMANDS
+# - Create all directories before copying references/building the index.
+# - Use the SAME sample ID for fastp, STAR and featureCounts.
+# - Add --countReadPairs: in Subread 2.1.1, -p alone specifies PE input,
+#   but does not request fragment/read-pair counts.
+# - Explicitly require library strandedness instead of silently assuming it.
+# - Record software versions and summarize fastp/STAR/featureCounts QC.
+# - Do not add -B/-C, two-pass alignment or duplicate removal as if they were
+#   previously used. These are separate analysis choices.
+# - --detect_adapter_for_pe is a demo addition to fastp; default quality
+#   filtering is otherwise retained. This is not a historical parameter claim.
+# - Do not interpret changes in counts as only a cosmetic correction: if the
+#   original counts were read counts, rerun downstream analyses on new counts.
+#
+# OFFICIAL DOCUMENTATION
+# https://github.com/OpenGene/fastp
+# https://github.com/alexdobin/STAR/blob/2.7.11b/doc/STARmanual.pdf
+# https://subread.sourceforge.net/featureCounts.html
+# https://subread.sourceforge.net/SubreadUsersGuide.pdf
+
+set -euo pipefail
+
+# -------------------- 1. Configuration --------------------
+REF=/sdb/xxjiang/soft/GRCm38.89
+PROJ=/sdb/xxjiang/soft/bulk_GRCm38.89
+RAW=/sdb/xxjiang/memb/fq/Bulk
+# A new directory avoids overwriting existing alignment/counting results.
+OUT=/sdb/xxjiang/memb/ncbref/Bulk_demo
+THREADS=16
+SORT_THREADS=8
+READ_LENGTH=${READ_LENGTH:-150}
+: "${STRAND:?Set STRAND to 0, 1 or 2 after confirming library strandedness}"
+case "$STRAND" in 0|1|2) ;; *) echo "STRAND must be 0, 1 or 2" >&2; exit 1;; esac
+[[ "$READ_LENGTH" =~ ^[0-9]+$ ]] && (( READ_LENGTH > 1 )) || {
+    echo "READ_LENGTH must be an integer greater than 1" >&2; exit 1;
+}
+SJDB_OVERHANG=$((READ_LENGTH - 1))
+
+export PATH="/sdb/xxjiang/soft/STAR-2.7.11b/source:/sdb/xxjiang/soft/subread-2.1.1/bin:$PATH"
+
+# Minimal processing demo. One sample per group is NOT sufficient for reliable
+# group-level differential-expression significance testing.
+# IDs match the three BAM names in the supplied featureCounts command.
+SAMPLES=(D1 RA1 2-DG1)
+
+# To process the previously discussed full FASTQ collection, replace the line
+# above with this EXPLICIT list after checking actual filenames:
+# SAMPLES=(
+#   D1 D1-2 D1-3 D1-4 D1-5 D1-6
+#   RA1 RA-3 RA-4 RA-6
+#   2-DG1 2DG-2 2DG-3 2DG-4 2DG-5 2DG-6
+# )
+# Keep the literal IDs: RA1 is not RA-1; 2-DG1 is not 2DG-1.
+# Do not infer treatment, tissue or biological replicate from filenames.
+# Use an explicit sample metadata table for downstream statistical analysis.
+
+FA="$PROJ/ref/genome.fa"
+GTF="$PROJ/ref/genes.gtf"
+INDEX="$PROJ/ref/STAR_index"
+
+# -------------------- 2. Validate inputs --------------------
+for tool in STAR fastp featureCounts samtools python3 gzip rsync; do
+    command -v "$tool" >/dev/null || { echo "Missing tool: $tool" >&2; exit 1; }
+done
+[[ -s "$REF/fasta/genome.fa" && -s "$REF/genes/genes.gtf" ]] || {
+    echo "Reference FASTA or GTF is missing/empty" >&2; exit 1;
+}
+declare -A SEEN=()
+for sample in "${SAMPLES[@]}"; do
+    [[ -z "${SEEN[$sample]:-}" ]] || { echo "Duplicate sample: $sample" >&2; exit 1; }
+    SEEN[$sample]=1
+    for mate in R1 R2; do
+        file="$RAW/${sample}_${mate}.fq.gz"
+        [[ -s "$file" ]] || { echo "Missing/empty FASTQ: $file" >&2; exit 1; }
+        gzip -t "$file"
+    done
+done
+[[ ! -e "$OUT" ]] || {
+    echo "Output directory already exists; choose a new OUT: $OUT" >&2; exit 1;
+}
+mkdir -p "$PROJ/ref" "$INDEX" "$OUT/fastp" "$OUT/alignment" "$OUT/counts" "$OUT/qc"
+
+# This reads one sequence directly, without counting the newline or triggering
+# a zcat|head SIGPIPE under set -o pipefail. It is only a first-read check;
+# use the sequencing specification for the maximum original read length.
+python3 - "$RAW/${SAMPLES[0]}_R1.fq.gz" <<'PY'
+import gzip, sys
+with gzip.open(sys.argv[1], 'rt') as f:
+    header = f.readline()
+    seq = f.readline().strip()
+if not header.startswith('@') or not seq:
+    raise SystemExit('Invalid/empty first FASTQ record')
+print('First R1 sequence length:', len(seq))
+PY
+
+{
+    STAR --version
+    fastp --version 2>&1
+    featureCounts -v 2>&1
+    samtools --version
+    python3 --version
+} > "$OUT/qc/software_versions.txt"
+printf 'sample_id\n' > "$OUT/qc/samples.txt"
+printf '%s\n' "${SAMPLES[@]}" >> "$OUT/qc/samples.txt"
+printf 'STRAND=%s\nREAD_LENGTH=%s\nsjdbOverhang=%s\n' \
+    "$STRAND" "$READ_LENGTH" "$SJDB_OVERHANG" > "$OUT/qc/parameters.txt"
+
+# -------------------- 3. Reference and STAR index --------------------
+# FASTA and GTF must refer to the same assembly and matching contig names.
+# An existing index is reused ONLY if built from these references with a
+# compatible STAR version and suitable sjdbOverhang. Check its provenance.
+if [[ ! -s "$INDEX/Genome" ]]; then
+    rsync -avh --progress "$REF/fasta/genome.fa" "$FA"
+    rsync -avh --progress "$REF/genes/genes.gtf" "$GTF"
+    STAR --runThreadN "$THREADS" \
+        --runMode genomeGenerate \
+        --genomeDir "$INDEX" \
+        --genomeFastaFiles "$FA" \
+        --sjdbGTFfile "$GTF" \
+        --sjdbOverhang "$SJDB_OVERHANG" \
+        --outFileNamePrefix "$OUT/qc/index_"
+else
+    [[ -s "$FA" && -s "$GTF" && -s "$INDEX/genomeParameters.txt" ]] || {
+        echo "Existing index lacks associated FASTA/GTF/parameters" >&2; exit 1;
+    }
+    echo "Reusing existing STAR index; verify reference/version provenance."
+fi
+cp "$INDEX/genomeParameters.txt" "$OUT/qc/STAR_genomeParameters.txt"
+
+# -------------------- 4. fastp -> STAR -> BAM QC --------------------
+BAMS=()
+for sample in "${SAMPLES[@]}"; do
+    echo "Processing: $sample"
+    fastp --thread "$THREADS" \
+        -i "$RAW/${sample}_R1.fq.gz" \
+        -I "$RAW/${sample}_R2.fq.gz" \
+        -o "$OUT/fastp/${sample}_R1.clean.fq.gz" \
+        -O "$OUT/fastp/${sample}_R2.clean.fq.gz" \
+        --detect_adapter_for_pe \
+        -h "$OUT/fastp/${sample}_fastp.html" \
+        -j "$OUT/fastp/${sample}_fastp.json" \
+        > "$OUT/qc/${sample}_fastp.log" 2>&1
+
+    STAR --runThreadN "$THREADS" \
+        --genomeDir "$INDEX" \
+        --readFilesIn "$OUT/fastp/${sample}_R1.clean.fq.gz" \
+                      "$OUT/fastp/${sample}_R2.clean.fq.gz" \
+        --readFilesCommand zcat \
+        --outFileNamePrefix "$OUT/alignment/${sample}_" \
+        --outSAMtype BAM SortedByCoordinate \
+        --outSAMattributes NH HI AS nM XS \
+        --outBAMsortingThreadN "$SORT_THREADS" \
+        > "$OUT/qc/${sample}_STAR.console.log" 2>&1
+
+    bam="$OUT/alignment/${sample}_Aligned.sortedByCoord.out.bam"
+    samtools quickcheck -v "$bam"
+    samtools index -@ "$SORT_THREADS" "$bam"
+    samtools flagstat -@ "$SORT_THREADS" "$bam" > "$OUT/qc/${sample}_flagstat.txt"
+    BAMS+=("$bam")
+done
+
+# -------------------- 5. Count paired-end fragments --------------------
+# exon features are aggregated by gene_id; output contains raw gene counts.
+# Default multi-mapping/ambiguous-assignment behavior is retained: no -M/-O.
+# No -B/-C filter is added. If used later, document it as a method change.
+featureCounts -T "$THREADS" \
+    -p --countReadPairs \
+    -s "$STRAND" \
+    -t exon -g gene_id \
+    -a "$GTF" \
+    -o "$OUT/counts/gene_counts.txt" \
+    "${BAMS[@]}" \
+    > "$OUT/qc/featureCounts.log" 2>&1
+
+# -------------------- 6. Export clean matrix and QC table --------------------
+# Strip annotation columns from featureCounts output, retaining gene IDs and
+# exact sample IDs. Also validate count columns and summarize processing QC.
+python3 - "$OUT" "${SAMPLES[@]}" <<'PY'
+import csv, json, pathlib, sys
+out = pathlib.Path(sys.argv[1])
+samples = sys.argv[2:]
+with (out / 'counts/gene_counts.txt').open() as f:
+    reader = csv.reader((line for line in f if not line.startswith('#')), delimiter='\t')
+    header = next(reader)
+    observed = [pathlib.Path(x).name.removesuffix('_Aligned.sortedByCoord.out.bam')
+                for x in header[6:]]
+    if observed != samples:
+        raise SystemExit(f'Count column mismatch: {observed} != {samples}')
+    with (out / 'counts/gene_counts_matrix.tsv').open('w', newline='') as g:
+        writer = csv.writer(g, delimiter='\t')
+        writer.writerow(['gene_id'] + samples)
+        for row in reader:
+            counts = [int(x) for x in row[6:]]
+            if len(counts) != len(samples) or any(x < 0 for x in counts):
+                raise SystemExit('Invalid count row')
+            writer.writerow([row[0]] + counts)
+with (out / 'counts/gene_counts.txt.summary').open() as f:
+    reader = csv.reader(f, delimiter='\t')
+    next(reader)
+    statuses = {row[0]: [int(x) for x in row[1:]] for row in reader}
+with (out / 'qc/processing_summary.tsv').open('w', newline='') as f:
+    writer = csv.writer(f, delimiter='\t')
+    writer.writerow(['sample_id', 'fastp_before_reads', 'fastp_after_reads',
+                     'fastp_after_Q30_rate', 'STAR_input_pairs',
+                     'STAR_unique_mapping_percent', 'featureCounts_assigned_fragments',
+                     'featureCounts_assignment_percent'])
+    for i, sample in enumerate(samples):
+        with (out / f'fastp/{sample}_fastp.json').open() as g:
+            fp = json.load(g)['summary']
+        star = {}
+        with (out / f'alignment/{sample}_Log.final.out').open() as g:
+            for line in g:
+                if '|' in line:
+                    k, v = line.split('|', 1)
+                    star[k.strip()] = v.strip()
+        assigned = statuses['Assigned'][i]
+        total = sum(v[i] for v in statuses.values())
+        writer.writerow([sample, fp['before_filtering']['total_reads'],
+                         fp['after_filtering']['total_reads'],
+                         fp['after_filtering']['q30_rate'],
+                         star.get('Number of input reads', 'NA'),
+                         star.get('Uniquely mapped reads %', 'NA'), assigned,
+                         round(100 * assigned / total, 2) if total else 'NA'])
+PY
+
+# -------------------- 7. Inspect results before downstream analysis --------------------
+# Check fastp HTML/JSON, each STAR Log.final.out, featureCounts log/summary and
+# qc/processing_summary.tsv. fastp total_reads counts both mates, whereas STAR
+# input reads in PE mode counts input pairs; they have different denominators.
+# samtools quickcheck verifies basic BAM integrity, not biological/sample QC.
+# There is no universal pass threshold: investigate sample outliers, low Q30,
+# low unique mapping or unusual Unassigned_* categories before proceeding.
+# Wrong strandedness or mismatched annotations can reduce gene assignment.
+#
+# DOWNSTREAM (separate R analysis; not executed here)
+# - Import counts/gene_counts_matrix.tsv as raw non-negative integer counts.
+# - Supply manually defined sample_id, group, tissue and replicate metadata.
+# - Verify sample order exactly matches count-matrix columns.
+# - Perform sample QC/PCA on an appropriate transformed count matrix.
+# - Use biological replicates and a design matching the experimental question.
+# - Analyze Embryo and Yolk_sac separately for tissue-specific effects, or use
+#   a justified tissue-aware model; do not pool distinct tissues blindly.
+# - DESeq2 input must be raw counts, not TPM/FPKM or transformed values.
+# - Report contrasts, testing method, adjusted-P and fold-change criteria.
+# - Enrichment requires an appropriate tested-gene background/ranked gene list.
+#
+# GITHUB
+# Upload this code plus a README documenting dependencies and a sample manifest.
+# Raw FASTQs, reference FASTA/GTF and BAMs should be obtained from their data
+# repository/accessions, rather than committed to the code repository.
+echo "Completed. Raw count matrix: $OUT/counts/gene_counts_matrix.tsv"
+echo "QC summary: $OUT/qc/processing_summary.tsv"
